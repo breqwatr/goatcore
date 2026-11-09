@@ -227,6 +227,26 @@ The specification is section 2 of the 9 November federation automation proposal:
 
 **Not built:** a live health probe of the deployed edge and core; `status` reports the recorded evidence and its age, not a fresh measurement.
 
+### `federate deploy` and `federate test`: an approved plan, executed
+
+Status: WIP — gate: on two environments, a peering's hosts are changed only by `goatbuilder federate deploy <partner>` with an approval naming the plan's hash; a deploy refused for a changed input changes nothing; and the test environment's `second-peering-while-first-carries` scenario shows a second deploy on a shared edge leaves the first peering's resources and journal as they were.
+
+The specification is section 2 of the 9 November federation automation proposal: `deploy` executes an approved plan through the existing roles, separate from `apply`, which stays a renderer; approval binds to the plan's hash; material live prerequisites are rechecked immediately before mutation, and changed inputs require a new plan.
+
+**Built** (`crates/goatbuilder/src/federate/deploy.rs`, `prompt.rs`, and the run and lock modules above; tests in those files and `crates/goatbuilder/tests/federate_deploy.rs`):
+
+- **The plan.** `<work>/plan.json`, or `--plan`, produced by `goatbuilder federate plan`. Its hash is `sha256:` over its exact bytes, taken by deploy; a hash written inside the plan is never trusted. Deploy requires `peering` (the partner named), `agreement_digest`, and `artifacts` (`[{path, sha256}]`, each path relative to the working folder, plain names only, under `applied/` or `pki/`), and reads `resources` (`[{kind, scope, value}]`, with `scope` the host) when present. A plan that is unreadable, is for another peering, does not say what it was made from, or has one malformed entry is refused whole (GB-187). The summary a person approves lists every file the plan was made from and every resource it takes.
+- **Approval bound to the hash.** `--approve-plan <hash>` (spacing and the `sha256:` prefix ignored, so it can be typed as read aloud), or a person at a terminal typing `yes` after reading the plan's summary and hash. `--yes` never approves a plan, and without a terminal deploy and test still need `--yes` (C10). With no approval, or with another hash, nothing runs (GB-186) and the message names the hash to approve. The approval is recorded in the journal as a `plan` confirmation bound to the hash, with how it was given, and the run carries the hash.
+- **Under the peering's lock, before anything changes:** the plan is read again and its hash compared with the approved one (GB-187); the agreement and the whole rendered set (every file under `<work>/applied/`, and any minted file the plan lists) are compared with the plan, so a changed, missing or unlisted file refuses (GB-188); when the run starts at 11, phase 10 must be recorded as done for what is rendered now (GB-190); the resources the plan names are claimed through the host-level allocation check (GB-181; another peering's journal is never changed); then phase 1, the live preflight, runs, and only then phases 10 to 13 through the existing plays. The plan's inputs are compared again just before each of phases 11, 12 and 13. A refusal is journaled as a `refused` run.
+- **What a deploy holds.** Claimed resources stay `claimed` (reserved for this peering) when a deploy fails or stops, so a retry can take them; a deploy that passes records them as `deployed` and releases any this peering held that the plan no longer names. A resource already `deployed` is never set back to `claimed`.
+- **Phase 10** is still the by-hand admission on our core. The first deploy stops there; `deploy <partner> --from 11` with the same approval declares it done and carries on (only `--from` 10 or 11 is accepted, GB-189). A later deploy skips phase 10 while that declaration holds and its inputs are unchanged; phases 1 and 11 to 13 always run. The stop and a failure name the deploy command to run again, approval included.
+- **A dry run** (`--dry-run`) asks for no approval and changes nothing; it still checks a hash that is given and whether the plan still matches what is on disk, and prints the phases a deploy would run.
+- **`goatbuilder federate test <partner>`** runs phase 14, acceptance, and nothing else, recorded as a `test` run.
+- `--plan` and `--approve-plan` belong to `deploy`; `--to` and `--resume` do not apply to a stage; `deploy` and `test` need the partner; `plan` is reserved and refuses as not built (GB-189).
+- `goatbuilder federate <partner>` is unchanged: it still runs phases 1 to 14 without a plan, as it always has, until the default switch.
+
+**Not built:** the planner that writes `plan.json` (stage 6, `goatbuilder federate plan`); until it lands the plan file is written by hand or by a test. A live recheck richer than phase 1's preflight (the planner's own recheck function will be called at the same point). `goatbuilder federate <partner>` running plan, deploy and test in order with the human stops: a default switch, held until the planner lands.
+
 ### A goatlite profile (future)
 
 > Designed 2026-10-31: [goatlite.md](goatlite.md) and [ADR 1213](../adr/1213-goatlite-preset-one-box-one-file.md). The paragraph below is the reservation this section made; the design doc is canonical.
