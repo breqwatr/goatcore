@@ -444,6 +444,11 @@ pub enum Cmd {
         /// Print every phase and command; run nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Skip the phases the run journal (<work>/state.json) shows passed,
+        /// whose inputs and local outputs are unchanged now; checks and plays
+        /// always run again.
+        #[arg(long)]
+        resume: bool,
     },
     /// ONE resolution pass with TWO renderings: every listed member's
     /// group_vars pins.yml and every listed goatnet's IntentV1 artifact, from
@@ -1301,12 +1306,12 @@ fn main() {
                 joinnode::join_node(&repo, &joinnode::Options { env, site, node, class, address: address.as_deref(), pass_var: pass_var.as_deref(), via, from: *from, to: *to, dry_run: *dry_run })
             }
         }
-        Cmd::Federate { with, env, as_party, edge_group, work, from, to, dry_run } => {
+        Cmd::Federate { with, env, as_party, edge_group, work, from, to, dry_run, resume } => {
             // A mock executes nothing, with or without --dry-run, so it mutates nothing.
             if !cli.yes && !*dry_run && cli.mock.is_none() && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 Err(anyhow::anyhow!("federate is a mutation: pass --yes without a terminal (C10)"))
             } else {
-                federate::federate(&repo, &federate::Options { with, env: env.as_deref(), r#as: as_party.as_deref(), edge_group: edge_group.as_deref(), work: work.as_deref(), mock: cli.mock.as_deref(), from: *from, to: *to, dry_run: *dry_run, table: matches!(cli.output, OutputFormat::Table) })
+                federate::federate_with(&repo, &federate::Options { with, env: env.as_deref(), r#as: as_party.as_deref(), edge_group: edge_group.as_deref(), work: work.as_deref(), mock: cli.mock.as_deref(), from: *from, to: *to, dry_run: *dry_run, table: matches!(cli.output, OutputFormat::Table) }, &federate::Surface { resume: *resume })
             }
         }
     };

@@ -37,6 +37,11 @@ use anyhow::{anyhow, Context, Result};
 use crate::config;
 use crate::{Check, Report, EXIT_OK, EXIT_REFUSED};
 
+pub mod lock;
+mod run;
+pub mod state;
+pub use run::Surface;
+
 pub struct Options<'a> {
     pub with: &'a str,
     pub env: Option<&'a str>,
@@ -391,7 +396,15 @@ fn plan_view(repo: &Path, o: &Options, work: &str, edge_group: &str, phases: &[P
     s
 }
 
+/// A run as it has always been: recorded in the journal, nothing skipped.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn federate(repo: &Path, o: &Options) -> Result<Report> {
+    federate_with(repo, o, &Surface::default())
+}
+
+/// A run with what the caller asked for beyond the phases (run.rs). A real
+/// run holds the peering's lock and is recorded in `<work>/state.json`.
+pub fn federate_with(repo: &Path, o: &Options, s: &Surface) -> Result<Report> {
     // `--mock <dir>` reads the flat `<dir>/goatbuilder.yaml`, the same fixture
     // shape standup opens; without it, the repository's own config.
     let cfg_path = match o.mock {
@@ -436,9 +449,20 @@ pub fn federate(repo: &Path, o: &Options) -> Result<Report> {
     if executes {
         let _ = std::fs::create_dir_all(format!("{work}/pki"));
     }
+    let mut run = None;
+    if executes {
+        let (r, rows) = run::Run::begin(o.with, &work, &phases, o.from, o.to, "federate", s)?;
+        checks.extend(rows);
+        run = Some(r);
+    }
     let mut exit = EXIT_OK;
+    let mut stopped = false;
     for ph in &phases {
         if ph.n < o.from || ph.n > o.to {
+            continue;
+        }
+        if let Some(r) = run.as_mut().filter(|r| r.skips(ph)) {
+            checks.push(r.skipped(ph));
             continue;
         }
         checks.push(row("phase", format!("=== Phase {} [{}] {} ===", ph.n, ph.kind, ph.label)));
@@ -451,6 +475,9 @@ pub fn federate(repo: &Path, o: &Options) -> Result<Report> {
             checks.push(row("mock", format!("phase {} recorded against the fixture; not executed", ph.n)));
             continue;
         }
+        if let Some(r) = run.as_mut() {
+            r.start(ph);
+        }
         if ph.kind == "MANUAL" {
             // The directory step, inside phase 5 before the stop. It is
             // advisory: its exit status is never read.
@@ -461,6 +488,10 @@ pub fn federate(repo: &Path, o: &Options) -> Result<Report> {
                 }
             }
             checks.push(row("note", format!("^ OPERATOR STEP — do the above, then re-run with --from {}", ph.n + 1)));
+            if let Some(r) = run.as_mut() {
+                r.end(ph, state::Outcome::Stopped, "waiting for the operator step");
+            }
+            stopped = true;
             break;
         }
         // -e, like standup and join-node: a phase that is several statements
@@ -469,9 +500,18 @@ pub fn federate(repo: &Path, o: &Options) -> Result<Report> {
         if !status.success() {
             let rc = status.code().unwrap_or(1);
             checks.push(Check { name: "failed".into(), ok: false, detail: format!("!! Phase {} (\"{}\") FAILED — exit {rc}. No later phase has run; the peering is left partway through phase {}. `goat federate` exit codes are specific: 20 composition refused, 21 lint refused, 22 diff refused, 23 a value could not be derived. docs/operations/sovereign-federation-runbook.md names this phase's \"worked when\"; Steps 7 and 8 are the acceptance criteria.", ph.n, ph.label, ph.n), fix: Some(format!("fix the cause, then resume — every phase is idempotent: {resume} --from {}", ph.n)) });
+            if let Some(r) = run.as_mut() {
+                r.end(ph, state::Outcome::Failed, &format!("GB-183: phase {} failed with exit {rc}", ph.n));
+            }
             exit = EXIT_REFUSED;
             break;
         }
+        if let Some(r) = run.as_mut() {
+            r.end(ph, state::Outcome::Passed, "");
+        }
+    }
+    if let Some(r) = run.as_mut() {
+        checks.extend(r.finish(if exit != EXIT_OK { "failed" } else if stopped { "stopped" } else { "passed" }));
     }
     let printed = o.dry_run && o.table;
     if printed {
