@@ -15,8 +15,11 @@
 # Both avenues run the federation verbs (phases 3, 4, 6, 7, 9) one of two ways,
 # chosen by FED_VERBS: `goat` (the default, `goat federate <verb>`) or
 # `goatbuilder` (`goatbuilder federate <verb>`; the binary runs them in
-# process). The gate compares the two avenues in both modes, so neither can
-# drift while it is not the default.
+# process). Phase 3 measures one of two ways, chosen by FED_MEASURE: `here`
+# (the default, the machine the run is on) or `ssh` (`goatbuilder federate
+# init --over-ssh`, the edge and core over SSH). The gate compares the two
+# avenues in all four combinations, so none can drift while it is not the
+# default.
 #
 # usage: parity-federate.sh <goatbuilder binary> <peering> [<peering> ...]
 set -euo pipefail
@@ -50,21 +53,24 @@ for c in json.load(sys.stdin)["checks"]:
 }
 
 fail=0
-for verbs in goat goatbuilder; do
-  export FED_VERBS="$verbs"
+for mode in "goat here" "goatbuilder here" "goat ssh" "goatbuilder ssh"; do
+  verbs="${mode% *}"; export FED_VERBS="$verbs"; export FED_MEASURE="${mode#* }"
   for peering in "$@"; do
     a="$(script_side "$peering" || true)"; b="$(binary_side "$peering" || true)"
     if [ -z "$a" ]; then
-      fail=1; echo "PARITY FAIL: federate $peering (FED_VERBS=$verbs) — the script produced no phases"; continue
+      fail=1; echo "PARITY FAIL: federate $peering (FED_VERBS=$verbs FED_MEASURE=$FED_MEASURE) — the script produced no phases"; continue
     fi
     if ! printf '%s\n' "$b" | grep -q "^$( [ "$verbs" = goat ] && echo GOAT || echo goatbuilder) federate lint "; then
-      fail=1; echo "PARITY FAIL: federate $peering (FED_VERBS=$verbs) — phase 4 does not run through $verbs"; continue
+      fail=1; echo "PARITY FAIL: federate $peering (FED_VERBS=$verbs FED_MEASURE=$FED_MEASURE) — phase 4 does not run through $verbs"; continue
+    fi
+    if [ "$FED_MEASURE" = ssh ] && ! printf '%s\n' "$b" | grep -q "^goatbuilder federate init .*--over-ssh '$peering' "; then
+      fail=1; echo "PARITY FAIL: federate $peering (FED_MEASURE=ssh) — phase 3 does not measure over SSH"; continue
     fi
     if [ "$a" != "$b" ]; then
-      fail=1; echo "PARITY FAIL: federate $peering (FED_VERBS=$verbs)"
+      fail=1; echo "PARITY FAIL: federate $peering (FED_VERBS=$verbs FED_MEASURE=$FED_MEASURE)"
       { diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") || true; } | sed 's/^/    /' | cut -c1-220 | head -40
     else
-      echo "parity ok: federate $peering --dry-run, FED_VERBS=$verbs ($(printf '%s\n' "$a" | grep -c '^=== ') phases, $(printf '%s\n' "$a" | grep -c .) lines identical)"
+      echo "parity ok: federate $peering --dry-run, FED_VERBS=$verbs FED_MEASURE=$FED_MEASURE ($(printf '%s\n' "$a" | grep -c '^=== ') phases, $(printf '%s\n' "$a" | grep -c .) lines identical)"
     fi
   done
 done
