@@ -41,6 +41,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+use super::admit;
 use super::confirm;
 use super::deploy::{self, Approved};
 use super::lock::{self, PeeringLock};
@@ -56,6 +57,8 @@ pub struct Surface {
     pub values: confirm::Values,
     /// Who answers questions: the terminal, or nobody.
     pub ask: Option<Box<dyn Ask>>,
+    /// Confirmation 2 (admit.rs): `--approve-admission`, `--review-in-pr`.
+    pub admission: admit::Admission,
     /// `--resume`: skip phases found done (see above).
     pub resume: bool,
     /// A stage runs exactly these phases (deploy: 1 and 10 to 13; test: 14)

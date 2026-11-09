@@ -37,6 +37,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::config;
 use crate::{Check, Report, EXIT_OK, EXIT_REFUSED};
 
+mod admit;
 mod confirm;
 pub mod deploy;
 pub mod lock;
@@ -45,6 +46,7 @@ mod run;
 pub mod stage;
 pub mod state;
 pub mod status;
+pub use admit::Admission;
 pub use confirm::Values;
 pub use run::Surface;
 
@@ -514,6 +516,29 @@ pub fn federate_with(repo: &Path, o: &Options, s: &mut Surface) -> Result<Report
                     confirm::Verdict::Continue => {
                         r.end(ph, state::Outcome::Passed, "keys confirmed");
                         replanned = Some(plan(repo, o, &work, &edge_group, &resume));
+                        continue;
+                    }
+                    confirm::Verdict::Stop(d) => {
+                        r.end(ph, state::Outcome::Stopped, &d);
+                        stopped = true;
+                        break;
+                    }
+                    confirm::Verdict::Fail(d) => {
+                        r.end(ph, state::Outcome::Failed, &d);
+                        exit = EXIT_REFUSED;
+                        break;
+                    }
+                }
+            }
+            // Confirmation 2, when asked for: the command admits the edge on
+            // our core after the person approves what it admits.
+            if let (10, Some(r), true) = (ph.n, run.as_mut(), admit::active(s)) {
+                let env_name = o.env.map(String::from).or_else(|| cfg.peerings.iter().find(|p| p.with == o.with).map(|p| p.environment.clone())).unwrap_or_default();
+                let step = admit::admit(repo, &r.paths, o.with, &env_name, s, &mut r.state, &r.id.clone());
+                checks.extend(step.rows);
+                match step.verdict {
+                    confirm::Verdict::Continue => {
+                        r.end(ph, state::Outcome::Passed, "admitted by the command");
                         continue;
                     }
                     confirm::Verdict::Stop(d) => {

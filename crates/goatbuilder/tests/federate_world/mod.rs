@@ -94,6 +94,8 @@ pub fn resigned(party: &str, fp: &str) -> Vec<u8> {
     canonical(&JVal::Obj(top)).into_bytes()
 }
 
+pub const FRAGMENT: &str = "// GENERATED\n##ACL-ORG-REGION storages\n##ACL-ORG-REGION write-rules\n      {\n        id: \"fed-w-xab\",\n        messages: [\"put\", \"delete\"],\n        flows: [\"ingress\"],\n        permission: \"allow\",\n        key_exprs: [\n          \"from/xab/**\",\n        ],\n      },\n##ACL-ORG-REGION subjects\n      {\n        id: \"fed-xab\",\n        cert_common_names: [\"fed.xab.xaa.01\"],\n      },\n##ACL-ORG-REGION policies\n";
+
 pub struct World {
     pub root: tempfile::TempDir,
     pub repo: PathBuf,
@@ -125,17 +127,35 @@ pub fn world() -> World {
     let log = r.join("log");
     let fake = r.join("fake");
     std::fs::create_dir_all(&fake).unwrap();
-    std::fs::write(fake.join("ours.json"), resigned("xaa", &sha256_hex(b"our-ca-der"))).unwrap();
+    std::fs::write(
+        fake.join("ours.json"),
+        resigned("xaa", &sha256_hex(b"our-ca-der")),
+    )
+    .unwrap();
+    let (our_fp, their_fp) = (sha256_hex(b"our-ca-der"), sha256_hex(b"fake-ca-der"));
     write(
         &fake.join("agreement.json"),
-        r#"{"spec":"federation-agreement/v1","transport":{"kind":"wireguard"}}"#,
+        &format!(
+            r#"{{"spec":"federation-agreement/v1","transport":{{"kind":"wireguard"}},"parties":[{{"sovereign_id":"xaa","ca_fingerprint":"{our_fp}"}},{{"sovereign_id":"xab","ca_fingerprint":"{their_fp}"}}]}}"#
+        ),
     );
+    write(&fake.join("fragment.json5"), FRAGMENT);
+    // Our core's org fragment, with another vendor and another partner already in it.
+    write(&r.join("core/org.json5"), "##ACL-ORG-REGION storages\n##ACL-ORG-REGION write-rules\n      { id: \"vendor-a\", messages: [\"put\"], flows: [\"ingress\"], permission: \"allow\", key_exprs: [\"vendor/a/**\"] },\n      // BEGIN peering xac (goatbuilder federate)\n      { id: \"fed-w-xac\", messages: [\"put\"], flows: [\"ingress\"], permission: \"allow\", key_exprs: [\"from/xac/**\"] },\n      // END peering xac\n##ACL-ORG-REGION subjects\n##ACL-ORG-REGION policies\n");
+    // Our core's access control seed, for phase 10 by the command.
+    std::fs::create_dir_all(repo.join("ops/ansible/roles/goat-zenoh/files")).unwrap();
+    std::fs::copy(
+        real.join("ops/ansible/roles/goat-zenoh/files/acl-assemble.py"),
+        repo.join("ops/ansible/roles/goat-zenoh/files/acl-assemble.py"),
+    )
+    .unwrap();
+    write(&r.join("core/seed.json5"), "{\n  // BEGIN: per-vendor storages\n  // END: per-vendor storages\n  // BEGIN: per-vendor write rules\n  // END: per-vendor write rules\n  // BEGIN: per-vendor subjects\n  // END: per-vendor subjects\n  // BEGIN: per-vendor policies\n  // END: per-vendor policies\n}\n");
     let (l, f) = (log.display(), fake.display());
     let (fail_12, hang_12, hang_6) = (r.join("fail-12"), r.join("hang-12"), r.join("hang-6"));
     exe(
         &r.join("bin/goat"),
         &format!(
-            "#!/bin/sh\necho \"goat $*\" >> '{l}'\nverb=$2; shift 2; out=\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && out=$2; shift; done\ncase $verb in\n init) cp '{f}/ours.json' \"$out\";;\n compose) [ -e '{h6}' ] && sleep 60; cp '{f}/agreement.json' \"$out\";;\n apply) mkdir -p \"$out/ops/federation/acl\"; echo rendered > \"$out/ops/federation/acl/xab-fragment.json5\";;\nesac\n",
+            "#!/bin/sh\necho \"goat $*\" >> '{l}'\nverb=$2; shift 2; out=\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && out=$2; shift; done\ncase $verb in\n init) cp '{f}/ours.json' \"$out\";;\n compose) [ -e '{h6}' ] && sleep 60; cp '{f}/agreement.json' \"$out\";;\n apply) mkdir -p \"$out/ops/federation/acl\"; cp '{f}/fragment.json5' \"$out/ops/federation/acl/xab-fragment.json5\";;\nesac\n",
             h6 = hang_6.display()
         ),
     );
@@ -223,6 +243,18 @@ impl World {
             .env("FED_WORK", &self.work)
             .env("FED_NO_DIRECTORY", "1")
             .env("FED_SIGNING_KEY", r.join("signing.key"))
+            .env("FED_CORE_ACL_ORG", r.join("core/org.json5"))
+            .env("FED_CORE_ACL_SEED", r.join("core/seed.json5"))
+            .env("FED_CORE_ACL_OUT", r.join("core/config.json5"))
+            .env(
+                "FED_CORE_DRY_RUN",
+                format!("echo dry-run >> '{}'", self.log.display()),
+            )
+            .env(
+                "FED_CORE_RESTART",
+                format!("echo restart >> '{}'", self.log.display()),
+            )
+            .env("FED_SLOT_CHECK", "skip")
             .current_dir(&self.repo)
             .stdin(std::process::Stdio::null());
         c
