@@ -113,7 +113,7 @@ def derive_lite(config: dict, checkout: dict | None = None) -> dict:
 
 
 RESERVED_PEERING_NAMES = ("init", "lint", "compose", "diff", "verify", "apply", "help",
-                          "status", "plan", "deploy", "test")
+                          "status", "plan", "deploy", "test", "backout")
 
 def errors_for(config: dict, schema: dict | None = None, checkout: dict | None = None) -> list[str]:
     """Every problem with `config`, as 'where: what' lines; empty means valid.

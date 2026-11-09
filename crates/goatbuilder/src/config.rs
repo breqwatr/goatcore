@@ -445,10 +445,11 @@ pub fn cross_field(cfg: &Config) -> Vec<String> {
 
 /// Words `goatbuilder federate <word>` takes, or is reserved to take, as a
 /// subcommand, so a peering declared with one could never be run: the six
-/// federation verbs, clap's `help`, and the stages of the one command
-/// (`status`, `plan`, `deploy`, `test`), reserved before they exist.
+/// federation verbs, clap's `help`, `backout` (one peering backed out), and the
+/// stages of the one command (`status`, `plan`, `deploy`, `test`), reserved
+/// before they exist.
 pub const RESERVED_PEERING_NAMES: &[&str] =
-    &["init", "lint", "compose", "diff", "verify", "apply", "help", "status", "plan", "deploy", "test"];
+    &["init", "lint", "compose", "diff", "verify", "apply", "help", "status", "plan", "deploy", "test", "backout"];
 
 /// Load, validate, and return the typed config — the entry every verb uses.
 /// The GitHub owner this checkout belongs to, from `repo: source:`. A fork or
@@ -648,7 +649,7 @@ mod tests {
     /// run, so it is refused where it is declared.
     #[test]
     fn a_peering_named_like_a_federate_subcommand_is_refused() {
-        for name in ["lint", "apply", "help", "status", "plan"] {
+        for name in ["lint", "apply", "help", "status", "plan", "backout"] {
             let mut v = with_sites();
             v["peerings"] = json!([{"with": name, "environment": "dev", "site": "alpha", "edge_class": "edge"}]);
             rejected(&v, "cannot name a partner");
@@ -656,6 +657,7 @@ mod tests {
         for verb in goat_federation::verbs::VERB_NAMES {
             assert!(RESERVED_PEERING_NAMES.contains(verb), "{verb} is a verb and must be reserved");
         }
+        assert!(RESERVED_PEERING_NAMES.contains(&crate::federate::backout::VERB), "backout is a subcommand and must be reserved");
     }
 
     #[test]

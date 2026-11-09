@@ -256,7 +256,7 @@ class FailClosed(unittest.TestCase):
         self.assertRejected(c, "cpus")
 
     def test_peering_named_like_a_federate_subcommand(self):
-        for name in ("lint", "apply", "help", "status", "plan"):
+        for name in ("lint", "apply", "help", "status", "plan", "backout"):
             c = with_sites()
             c["peerings"] = [{"with": name, "environment": "dev", "site": "alpha", "edge_class": "edge"}]
             self.assertRejected(c, "cannot name a partner")
