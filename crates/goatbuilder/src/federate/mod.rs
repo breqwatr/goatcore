@@ -37,6 +37,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::config;
 use crate::{Check, Report, EXIT_OK, EXIT_REFUSED};
 
+mod confirm;
 pub mod deploy;
 pub mod lock;
 pub mod prompt;
@@ -44,6 +45,7 @@ mod run;
 pub mod stage;
 pub mod state;
 pub mod status;
+pub use confirm::Values;
 pub use run::Surface;
 
 #[derive(Clone, Copy)]
@@ -404,12 +406,12 @@ fn plan_view(repo: &Path, o: &Options, work: &str, edge_group: &str, phases: &[P
 /// A run as it has always been: recorded in the journal, nothing skipped.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn federate(repo: &Path, o: &Options) -> Result<Report> {
-    federate_with(repo, o, &Surface::default())
+    federate_with(repo, o, &mut Surface::default())
 }
 
 /// A run with what the caller asked for beyond the phases (run.rs). A real
 /// run holds the peering's lock and is recorded in `<work>/state.json`.
-pub fn federate_with(repo: &Path, o: &Options, s: &Surface) -> Result<Report> {
+pub fn federate_with(repo: &Path, o: &Options, s: &mut Surface) -> Result<Report> {
     // `--mock <dir>` reads the flat `<dir>/goatbuilder.yaml`, the same fixture
     // shape standup opens; without it, the repository's own config.
     let cfg_path = match o.mock {
@@ -462,7 +464,11 @@ pub fn federate_with(repo: &Path, o: &Options, s: &Surface) -> Result<Report> {
     }
     let mut exit = EXIT_OK;
     let mut stopped = false;
-    for ph in &phases {
+    // Phase 5 confirmed in this run writes the keyring phase 6 reads: the
+    // phases after it are planned again from what is there now.
+    let mut replanned: Option<Vec<Phase>> = None;
+    for planned in &phases {
+        let ph = replanned.as_ref().and_then(|v| v.iter().find(|p| p.n == planned.n)).unwrap_or(planned);
         if !s.runs(ph.n, o.from, o.to) {
             continue;
         }
@@ -499,6 +505,29 @@ pub fn federate_with(repo: &Path, o: &Options, s: &Surface) -> Result<Report> {
                     checks.push(row("directory", "the directory step ran; it is advisory and its result changes no phase".into()));
                 }
             }
+            // Confirmation 1, when asked for: the command binds the keys
+            // and carries on instead of stopping.
+            if let (5, Some(r), true) = (ph.n, run.as_mut(), s.values.active()) {
+                let step = confirm::exchange(&r.paths, s, &mut r.state, &r.id.clone());
+                checks.extend(step.rows);
+                match step.verdict {
+                    confirm::Verdict::Continue => {
+                        r.end(ph, state::Outcome::Passed, "keys confirmed");
+                        replanned = Some(plan(repo, o, &work, &edge_group, &resume));
+                        continue;
+                    }
+                    confirm::Verdict::Stop(d) => {
+                        r.end(ph, state::Outcome::Stopped, &d);
+                        stopped = true;
+                        break;
+                    }
+                    confirm::Verdict::Fail(d) => {
+                        r.end(ph, state::Outcome::Failed, &d);
+                        exit = EXIT_REFUSED;
+                        break;
+                    }
+                }
+            }
             checks.push(row("note", format!("^ OPERATOR STEP — do the above, then re-run with --from {}", ph.n + 1)));
             if let Some(again) = &s.again {
                 checks.push(row("note", format!("the command that carries on: {again} --from {}", ph.n + 1)));
@@ -525,6 +554,24 @@ pub fn federate_with(repo: &Path, o: &Options, s: &Surface) -> Result<Report> {
             break;
         }
         if let Some(r) = run.as_mut() {
+            // Confirmation 1, second half: the agreement digest after compose.
+            if ph.n == 6 && s.values.active() {
+                let step = confirm::agreement(&r.paths, s, &mut r.state, &r.id.clone());
+                checks.extend(step.rows);
+                match step.verdict {
+                    confirm::Verdict::Continue => {}
+                    confirm::Verdict::Stop(d) => {
+                        r.end(ph, state::Outcome::Stopped, &d);
+                        stopped = true;
+                        break;
+                    }
+                    confirm::Verdict::Fail(d) => {
+                        r.end(ph, state::Outcome::Failed, &d);
+                        exit = EXIT_REFUSED;
+                        break;
+                    }
+                }
+            }
             r.end(ph, state::Outcome::Passed, "");
         }
     }

@@ -434,12 +434,12 @@ pub fn deploy(
         if o.mock.is_none() {
             still_holds(&plan.approved("flag"), Path::new(&work))?;
         }
-        let s = Surface {
+        let mut s = Surface {
             resume: true,
             only: Some(only),
             stage: "deploy",
-            plan: None,
             again,
+            ..Default::default()
         };
         return federate_with(
             repo,
@@ -449,16 +449,17 @@ pub fn deploy(
                 table: false,
                 ..*o
             },
-            &s,
+            &mut s,
         );
     }
     let approved = approve(&plan, approve_flag, ask)?;
-    let s = Surface {
+    let mut s = Surface {
         resume: true,
         only: Some(only),
         stage: "deploy",
         plan: Some(approved),
         again,
+        ..Default::default()
     };
     federate_with(
         repo,
@@ -467,19 +468,18 @@ pub fn deploy(
             to: DEPLOY_TO,
             ..*o
         },
-        &s,
+        &mut s,
     )
 }
 
 /// `goatbuilder federate test <partner>`: acceptance alone.
 pub fn test(repo: &Path, o: &Options) -> Result<Report> {
     let again = Some(format!("goatbuilder federate test {}", o.with));
-    let s = Surface {
-        resume: false,
+    let mut s = Surface {
         only: Some(BTreeSet::from([TEST])),
         stage: "test",
-        plan: None,
         again,
+        ..Default::default()
     };
     federate_with(
         repo,
@@ -488,7 +488,7 @@ pub fn test(repo: &Path, o: &Options) -> Result<Report> {
             to: TEST,
             ..*o
         },
-        &s,
+        &mut s,
     )
 }
 
