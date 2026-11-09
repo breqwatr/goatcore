@@ -37,6 +37,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::config;
 use crate::{Check, Report, EXIT_OK, EXIT_REFUSED};
 
+pub mod hostalloc;
 pub mod plan;
 pub mod preflight;
 
