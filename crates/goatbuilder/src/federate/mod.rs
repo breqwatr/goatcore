@@ -39,7 +39,9 @@ use crate::{Check, Report, EXIT_OK, EXIT_REFUSED};
 
 pub mod lock;
 mod run;
+pub mod stage;
 pub mod state;
+pub mod status;
 pub use run::Surface;
 
 pub struct Options<'a> {

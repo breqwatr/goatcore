@@ -217,6 +217,16 @@ The specification is section 2 of the 9 November federation automation proposal:
 
 **Not built:** a caller of `lock::claim` in a real run (it is unit-tested; `federate deploy` is its first caller); resuming by default (a separate change, held until `kill-resume` passes); a live probe of the core's admission for phase 10, which a resumed run skips only when it was declared done and its inputs are unchanged.
 
+### `federate status`: what each peering's journal and evidence say
+
+Status: WIP — gate: on two environments, `goatbuilder federate status` reads back a peering stood up by `goatbuilder federate`, with the acceptance verdict, its age and its scope, and marks evidence stale after the agreement changes.
+
+The specification is section 2 of the 9 November federation automation proposal: `status` shows deployment health and the last acceptance evidence, with its age and scope.
+
+**Built** (`crates/goatbuilder/src/federate/status.rs`, `stage.rs`; tests there and in `crates/goatbuilder/tests/federate_status.rs`). `goatbuilder federate status [<partner>]` reads, for every declared peering (or the one named, or those on `--env`): the journal's last run and how it ended; each phase's last outcome, attempts and detail; the confirmations given; the resources held on shared hosts; the digest of `<work>/agreement.json`; and the last acceptance evidence, `result.json` (`goat-federation-acceptance/v1`): its verdict, when it ended and how long ago, its counts by outcome word, and whether the agreement it names is the one in the working folder (`current`) or another (`stale`). A run with no end in the journal reads `in progress` when the process id in its `.lock` file is alive and `killed` when it is not; a process id can be reused, so `in progress` can be wrong after a reboot. Status names the next command from the last run (not from the highest phase recorded), aimed at the same working folder. It prints a table, or `-o json` / `-o yaml` (`goatbuilder.federate.status/v1`). It writes nothing, creates nothing and takes no lock, so it can never make a starting run refuse; a journal, agreement or evidence file it cannot read is shown as unreadable, never as absent. With one partner named, its folder follows the run's own rule (`--work`, else `$FED_WORK`, else `/var/lib/goat-federation/<partner>`) and its evidence folder is `$FED_EVIDENCE_DIR` when set, else `<work>/evidence/acceptance`. Without a partner, each peering's folder is `$FED_WORK_ROOT/<partner>`, else `/var/lib/goat-federation/<partner>`, and `--work` is refused. A partner that is not declared is refused (GB-185). The ten words `init lint compose diff verify apply status plan deploy test` cannot name a partner; config validation refuses one.
+
+**Not built:** a live health probe of the deployed edge and core; `status` reports the recorded evidence and its age, not a fresh measurement.
+
 ### A goatlite profile (future)
 
 > Designed 2026-10-31: [goatlite.md](goatlite.md) and [ADR 1213](../adr/1213-goatlite-preset-one-box-one-file.md). The paragraph below is the reservation this section made; the design doc is canonical.

@@ -412,6 +412,9 @@ pub fn cross_field(cfg: &Config) -> Vec<String> {
         }
     }
     for (pi, p) in cfg.peerings.iter().enumerate() {
+        if let Some(why) = crate::federate::stage::reserved_partner(&p.with) {
+            out.push(format!("peerings/{pi}: {why}"));
+        }
         let Some(sites) = sites_of.get(p.environment.as_str()) else {
             out.push(format!(
                 "peerings/{pi} (with '{}'): names undeclared environment '{}'",
@@ -621,6 +624,13 @@ mod tests {
             .unwrap()
             .remove("joins");
         rejected(&v, "joins");
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_name_a_partner() {
+        let mut v = with_sites();
+        v["peerings"] = json!([{"with": "status", "environment": "dev", "site": "alpha", "edge_class": "edge"}]);
+        rejected(&v, "cannot name a partner");
     }
 
     #[test]
