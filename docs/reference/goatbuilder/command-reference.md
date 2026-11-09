@@ -273,6 +273,31 @@ A sovereign peering declared, converged and verified (ADR 1157): our half measur
 | `--to <TO>` | Stop after this phase | `99` |
 | `--dry-run` | Print every phase and command; run nothing |  |
 
+**Subcommands**
+
+- [`goatbuilder federate plan`](#goatbuilder-federate-plan) — The bounded plan of one peering before anything changes: versions, agreement digest, rendered-configuration hashes, owned resources, restarts, acceptance policy and phase 1's readiness, written to <work>/plan.json with a stable hash. Reads only; changes no host
+
+## `goatbuilder federate plan`
+
+The bounded plan of one peering before anything changes: versions, agreement digest, rendered-configuration hashes, owned resources, restarts, acceptance policy and phase 1's readiness, written to <work>/plan.json with a stable hash. Reads only; changes no host
+
+**Arguments**
+
+| Argument | Description |
+|---|---|
+| `<WITH>` | The peering name (the counterparty, as declared) |
+
+**Options**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--env <ENV>` | The environment the peering is declared on |  |
+| `--as <AS_PARTY>` | Which party we are |  |
+| `--edge-group <EDGE_GROUP>` | The ansible group the edge runs in (default <peering>_edge) |  |
+| `--work <WORK>` | The working directory (default $FED_WORK, else /var/lib/goat-federation/<peering>) |  |
+| `--no-live` | Skip phase 1's live reads of the hosts; each is reported SKIP |  |
+| `--recheck` | Recheck the saved plan instead of writing one: refused when the file was altered, an input changed, or a live prerequisite fails |  |
+
 ## `goatbuilder pins`
 
 ONE resolution pass with TWO renderings: every listed member's group_vars pins.yml and every listed goatnet's IntentV1 artifact, from ops/pins/fleet-pins.yaml. Replaces ops/pins/generate-pins.py byte for byte. `--check` validates, regenerates and refuses drift, an unsigned or tampered intent, and a governed pin defined outside pins.yml (exit 1)

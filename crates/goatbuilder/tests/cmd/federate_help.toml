@@ -9,39 +9,46 @@ it, the rules rendered by the one writer, the edge deployed, the transport the a
 opened, acceptance in all four tiers. Replaces ops/scripts/peering-standup.sh step for step
 
 Usage: goatbuilder federate [OPTIONS] <WITH>
+       goatbuilder federate <COMMAND>
+
+Commands:
+  plan  The bounded plan of one peering before anything changes: versions, agreement digest,
+        rendered-configuration hashes, owned resources, restarts, acceptance policy and phase 1's
+        readiness, written to <work>/plan.json with a stable hash. Reads only; changes no host
+  help  Print this message or the help of the given subcommand(s)
 
 Arguments:
   <WITH>  The peering name (the counterparty, as declared)
 
 Options:
-      --env <ENV>                The environment the peering is declared on (checked against
-                                 goatbuilder.yaml peerings:)
   -o, --output <OUTPUT>          Output format: a table for a person; JSON or YAML for a program
                                  [default: table] [possible values: table, json, yaml]
-      --as <SOVEREIGN>           Which party we are (default: read from the declaration)
   -C, --repo <DIR>               The repository root. Defaults to the checkout this binary is run in
-      --edge-group <EDGE_GROUP>  The ansible group the edge runs in (default <peering>_edge)
+      --env <ENV>                The environment the peering is declared on (checked against
+                                 goatbuilder.yaml peerings:)
+      --as <SOVEREIGN>           Which party we are (default: read from the declaration)
       --yes                      Confirm a declarative verb without prompting (for automation)
+      --edge-group <EDGE_GROUP>  The ansible group the edge runs in (default <peering>_edge)
       --frozen                   Refuse any run that would need to fast-forward the checkout (strict
                                  C3)
-      --work <WORK>              The working directory (default $FED_WORK, else
-                                 /var/lib/goat-federation/<peering>)
-      --from <FROM>              Resume from this phase [default: 1]
       --offline                  An islanded site: do not fetch the trunk; judge the checkout
                                  against the cached one, and record the run as offline (C3;
                                  ops/scripts/fresh-source.sh)
+      --work <WORK>              The working directory (default $FED_WORK, else
+                                 /var/lib/goat-federation/<peering>)
+      --from <FROM>              Resume from this phase [default: 1]
       --mock <DIR>               Run against a fixture directory instead of hosts: no registry, no
                                  transport, deterministic (goatbuilder-conformance.md §"The
                                  fixture")
-      --to <TO>                  Stop after this phase [default: 99]
-      --dry-run                  Print every phase and command; run nothing
       --lang <TAG>               Language for help and error explanations (a tag such as fr, uk,
                                  de); output a pipeline reads stays English. Default: the OS locale
                                  [env: GOAT_LANG=]
+      --to <TO>                  Stop after this phase [default: 99]
       --color <COLOR>            Color the table's ok/FAIL glyph and verdict (auto|always|never).
                                  `auto` colors only a terminal; NO_COLOR and CLICOLOR_FORCE
                                  override. JSON and YAML are never colored [default: auto] [possible
                                  values: auto, always, never]
+      --dry-run                  Print every phase and command; run nothing
   -v, --verbose                  Log what a run does — the external commands it shells out to, and
                                  the network phase of `update` — to stderr, so `-o json|yaml` stays
                                  a clean document. Or set RUST_LOG=goatbuilder=debug

@@ -420,9 +420,14 @@ pub enum Cmd {
     /// the one writer, the edge deployed, the transport the agreement chose
     /// opened, acceptance in all four tiers. Replaces
     /// ops/scripts/peering-standup.sh step for step.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Federate {
+        /// One stage alone instead of the whole peering.
+        #[command(subcommand)]
+        stage: Option<federate::plan::Stage>,
         /// The peering name (the counterparty, as declared).
-        with: String,
+        #[arg(required = true)]
+        with: Option<String>,
         /// The environment the peering is declared on (checked against goatbuilder.yaml peerings:).
         #[arg(long)]
         env: Option<String>,
@@ -1301,7 +1306,9 @@ fn main() {
                 joinnode::join_node(&repo, &joinnode::Options { env, site, node, class, address: address.as_deref(), pass_var: pass_var.as_deref(), via, from: *from, to: *to, dry_run: *dry_run })
             }
         }
-        Cmd::Federate { with, env, as_party, edge_group, work, from, to, dry_run } => {
+        Cmd::Federate { stage: Some(stage), .. } => federate::plan::run(&repo, stage, cli.mock.as_deref()),
+        Cmd::Federate { stage: None, with, env, as_party, edge_group, work, from, to, dry_run } => {
+            let with = with.as_deref().unwrap_or_default();
             // A mock executes nothing, with or without --dry-run, so it mutates nothing.
             if !cli.yes && !*dry_run && cli.mock.is_none() && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 Err(anyhow::anyhow!("federate is a mutation: pass --yes without a terminal (C10)"))
