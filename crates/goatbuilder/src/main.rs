@@ -433,6 +433,19 @@ pub enum Cmd {
         /// --yes never approves a plan.
         #[arg(long, value_name = "SHA256")]
         approve_plan: Option<String>,
+        /// Phases 5 and 6: confirm the keys and the agreement digest here, at
+        /// this terminal, instead of stopping for them by hand.
+        #[arg(long)]
+        confirm: bool,
+        /// Phase 5: the partner's verifying key, as read aloud on the call.
+        #[arg(long, value_name = "BASE64")]
+        partner_key: Option<String>,
+        /// Phase 5: the partner's CA fingerprint, as read aloud on the call.
+        #[arg(long, value_name = "SHA256")]
+        partner_ca_fingerprint: Option<String>,
+        /// Phase 6: the agreement digest, as compared with the partner.
+        #[arg(long, value_name = "SHA256")]
+        agreement_digest: Option<String>,
         /// The environment the peering is declared on (checked against goatbuilder.yaml peerings:).
         #[arg(long)]
         env: Option<String>,
@@ -1316,7 +1329,7 @@ fn main() {
                 joinnode::join_node(&repo, &joinnode::Options { env, site, node, class, address: address.as_deref(), pass_var: pass_var.as_deref(), via, from: *from, to: *to, dry_run: *dry_run })
             }
         }
-        Cmd::Federate { with, partner, plan, approve_plan, env, as_party, edge_group, work, from, to, dry_run, resume } => {
+        Cmd::Federate { with, partner, plan, approve_plan, confirm, partner_key, partner_ca_fingerprint, agreement_digest, env, as_party, edge_group, work, from, to, dry_run, resume } => {
             let cfg_path = cli.mock.as_ref().map(|m| m.join("goatbuilder.yaml")).unwrap_or_else(|| repo.join("ops/goatbuilder/goatbuilder.yaml"));
             if with == "status" {
                 let format = match cli.output {
@@ -1331,6 +1344,10 @@ fn main() {
                 Err(goat_errors::coded("GB-189", format!("`goatbuilder federate {with}` needs the partner: goatbuilder federate {with} <partner>")).into())
             } else if partner.is_some() && !matches!(with.as_str(), "deploy" | "test") {
                 Err(goat_errors::coded("GB-189", format!("unexpected argument '{}': only a stage word (status, deploy, test) takes a partner after it", partner.as_deref().unwrap_or_default())).into())
+            } else if (*confirm || partner_key.is_some() || partner_ca_fingerprint.is_some() || agreement_digest.is_some()) && matches!(with.as_str(), "deploy" | "test") {
+                Err(goat_errors::coded("GB-189", format!("--confirm, --partner-key, --partner-ca-fingerprint and --agreement-digest belong to phases 5 and 6 of `goatbuilder federate <partner>`, not to {with}")).into())
+            } else if ((partner_key.is_some() || partner_ca_fingerprint.is_some()) && !(*from <= 5 && 5 <= *to)) || (agreement_digest.is_some() && !(*from <= 6 && 6 <= *to)) {
+                Err(goat_errors::coded("GB-189", "--partner-key and --partner-ca-fingerprint are for phase 5 and --agreement-digest for phase 6; this run's --from/--to leave that phase out").into())
             } else if (plan.is_some() || approve_plan.is_some()) && with != "deploy" {
                 Err(goat_errors::coded("GB-189", "--plan and --approve-plan belong to `goatbuilder federate deploy <partner>`").into())
             } else if matches!(with.as_str(), "deploy" | "test") && (*to != 99 || *resume) {
@@ -1345,7 +1362,10 @@ fn main() {
                 match with.as_str() {
                     "deploy" => federate::deploy::deploy(&repo, &o, plan.as_deref(), approve_plan.as_deref(), &mut federate::prompt::Terminal),
                     "test" => federate::deploy::test(&repo, &o),
-                    _ => federate::federate_with(&repo, &o, &federate::Surface { resume: *resume, ..Default::default() }),
+                    _ => {
+                        let values = federate::Values { ask: *confirm, partner_key: partner_key.clone(), partner_ca_fingerprint: partner_ca_fingerprint.clone(), agreement_digest: agreement_digest.clone() };
+                        federate::federate_with(&repo, &o, &mut federate::Surface { resume: *resume, values, ask: Some(Box::new(federate::prompt::Terminal)), ..Default::default() })
+                    }
                 }
             }
         }

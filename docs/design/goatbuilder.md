@@ -247,6 +247,23 @@ The specification is section 2 of the 9 November federation automation proposal:
 
 **Not built:** the planner that writes `plan.json` (stage 6, `goatbuilder federate plan`); until it lands the plan file is written by hand or by a test. A live recheck richer than phase 1's preflight (the planner's own recheck function will be called at the same point). `goatbuilder federate <partner>` running plan, deploy and test in order with the human stops: a default switch, held until the planner lands.
 
+### `federate`: confirmation 1, the keys read aloud and the agreement digest
+
+Status: WIP — gate: on two environments, phase 5 and 6 are carried by `goatbuilder federate <partner>` on each side (one side at a terminal with `--confirm`, the other by flag), both keyrings and journals record the same keys and agreement digest, and acceptance then passes.
+
+The human act stays human: each side reads its verifying key and CA fingerprint aloud on one call, the other reads them back, and after compose both compare the agreement digest. What changes is that the command checks what it can and writes the keyring, instead of the operator typing `keys.txt` and re-running with `--from 6`.
+
+**Built** (`crates/goatbuilder/src/federate/confirm.rs`; tests there and in `crates/goatbuilder/tests/federate_confirm.rs`). Only when asked for, with `--confirm` (ask at this terminal) or the values themselves:
+
+- **Phase 5**, after the directory step: our verifying key (derived from the `FED_SIGNING_KEY` seed) and CA fingerprint are shown to read aloud; the key must verify our own half's signature (GB-193 otherwise, so both sides never bind a key that does not verify our package). Their CA fingerprint is taken from their package and must be the fingerprint of a certificate in the CA file that arrived (GB-191). The person confirms it was the one they heard (`--partner-ca-fingerprint`, which must equal it, or `yes` at the terminal), and gives their verifying key as read aloud (`--partner-key`, or typed at the terminal; it is never offered from anything that arrived over the wire). The key must be 32 bytes of base64 and must verify their half's signature, the check compose makes, so a misheard key stops here rather than at compose (GB-191). Both sovereign ids must be plain ids and different, and theirs must equal `FED_COUNTERPARTY_ID` when that is set (GB-191). Only then are both keys written to the keyring (other lines in it are kept; a keyring that cannot be read is not replaced), and the phases after 5 are planned again so compose receives them. The confirmation is journaled as `keys` with the values, how each was given, and a digest of their half and CA as they arrived.
+- **After phase 6**: the agreement digest (`sha256:` over the composed file, which is the canonical form compose digests) is compared: `--agreement-digest`, which must equal it, or `yes` at the terminal. Journaled as `agreement`, bound to the digest. On a mismatch the composed agreement stays on disk for `goat federate diff`, and the run stops.
+- **Without a terminal, nothing is taken as confirmed.** A missing value stops the run (GB-192, exit 0, as a by-hand stop does) and names the flag to pass; at phase 5 a value that differs fails it (GB-191, exit 1) before the keyring is written. Only the typed word `yes` confirms at a terminal. `--yes` confirms nothing.
+- With `--resume`, given key values are a new answer to phase 5, so phase 5 and everything after it that reads the keyring run again. Values for a phase this run's `--from`/`--to` leave out are refused (GB-189).
+- Without `--confirm` and without those values, phase 5 stops exactly as before and phase 6 does not ask.
+- The four flags belong to `goatbuilder federate <partner>`; `deploy` and `test` refuse them (GB-189).
+
+**Not built:** asking at the terminal by default (a separate change, held until the gate above passes).
+
 ### A goatlite profile (future)
 
 > Designed 2026-10-31: [goatlite.md](goatlite.md) and [ADR 1213](../adr/1213-goatlite-preset-one-box-one-file.md). The paragraph below is the reservation this section made; the design doc is canonical.
