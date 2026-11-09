@@ -8,10 +8,12 @@ exchanged through the peering directory, one agreement composed and verified, th
 it, the rules rendered by the one writer, the edge deployed, the transport the agreement chose
 opened, acceptance in all four tiers. Replaces ops/scripts/peering-standup.sh step for step
 
-Usage: goatbuilder federate [OPTIONS] <WITH>
+Usage: goatbuilder federate [OPTIONS] <WITH> [PARTNER]
 
 Arguments:
-  <WITH>  The peering name (the counterparty, as declared)
+  <WITH>     The peering name (the counterparty, as declared), or a stage run alone: `status
+             [<partner>]`
+  [PARTNER]  The partner, after a stage word (`status <partner>`)
 
 Options:
       --env <ENV>                The environment the peering is declared on (checked against

@@ -421,8 +421,11 @@ pub enum Cmd {
     /// opened, acceptance in all four tiers. Replaces
     /// ops/scripts/peering-standup.sh step for step.
     Federate {
-        /// The peering name (the counterparty, as declared).
+        /// The peering name (the counterparty, as declared), or a stage run
+        /// alone: `status [<partner>]`.
         with: String,
+        /// The partner, after a stage word (`status <partner>`).
+        partner: Option<String>,
         /// The environment the peering is declared on (checked against goatbuilder.yaml peerings:).
         #[arg(long)]
         env: Option<String>,
@@ -1306,9 +1309,19 @@ fn main() {
                 joinnode::join_node(&repo, &joinnode::Options { env, site, node, class, address: address.as_deref(), pass_var: pass_var.as_deref(), via, from: *from, to: *to, dry_run: *dry_run })
             }
         }
-        Cmd::Federate { with, env, as_party, edge_group, work, from, to, dry_run, resume } => {
+        Cmd::Federate { with, partner, env, as_party, edge_group, work, from, to, dry_run, resume } => {
+            let cfg_path = cli.mock.as_ref().map(|m| m.join("goatbuilder.yaml")).unwrap_or_else(|| repo.join("ops/goatbuilder/goatbuilder.yaml"));
+            if with == "status" {
+                let format = match cli.output {
+                    OutputFormat::Table => federate::status::Format::Table,
+                    OutputFormat::Json => federate::status::Format::Json,
+                    OutputFormat::Yaml => federate::status::Format::Yaml,
+                };
+                federate::status::status(&cfg_path, partner.as_deref(), env.as_deref(), work.as_deref(), format)
+            } else if let Some(extra) = partner {
+                Err(anyhow::anyhow!("unexpected argument '{extra}': only a stage word (status) takes a partner after it"))
             // A mock executes nothing, with or without --dry-run, so it mutates nothing.
-            if !cli.yes && !*dry_run && cli.mock.is_none() && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            } else if !cli.yes && !*dry_run && cli.mock.is_none() && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 Err(anyhow::anyhow!("federate is a mutation: pass --yes without a terminal (C10)"))
             } else {
                 federate::federate_with(&repo, &federate::Options { with, env: env.as_deref(), r#as: as_party.as_deref(), edge_group: edge_group.as_deref(), work: work.as_deref(), mock: cli.mock.as_deref(), from: *from, to: *to, dry_run: *dry_run, table: matches!(cli.output, OutputFormat::Table) }, &federate::Surface { resume: *resume })
