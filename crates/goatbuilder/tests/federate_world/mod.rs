@@ -133,11 +133,7 @@ impl World {
     pub fn command_with(&self, global: &[&str], extra: &[&str]) -> Command {
         let r = self.root.path();
         let mut args: Vec<String> = global.iter().map(|s| s.to_string()).collect();
-        args.extend([
-            "-C".into(),
-            self.repo.display().to_string(),
-            "--yes".into(),
-        ]);
+        args.extend(["-C".into(), self.repo.display().to_string(), "--yes".into()]);
         if !global.contains(&"-o") {
             args.extend(["-o".into(), "json".into()]);
         }
