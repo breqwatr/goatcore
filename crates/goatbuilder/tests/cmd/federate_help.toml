@@ -27,49 +27,53 @@ Options:
   -C, --repo <DIR>
           The repository root. Defaults to the checkout this binary is run in
       --confirm
-          Phases 5 and 6: confirm the keys and the agreement digest here, at this terminal, instead
-          of stopping for them by hand
+          Phases 5, 6 and 10: confirm the keys, the agreement digest and the admission here, at this
+          terminal, instead of stopping for them by hand. The default when both stdin and stderr are
+          a terminal
       --yes
           Confirm a declarative verb without prompting (for automation)
       --frozen
           Refuse any run that would need to fast-forward the checkout (strict C3)
-      --partner-key <BASE64>
-          Phase 5: the partner's verifying key, as read aloud on the call
+      --no-confirm
+          Stop at phases 5 and 10 for the steps by hand even at a terminal, as before confirming at
+          the terminal was the default
       --offline
           An islanded site: do not fetch the trunk; judge the checkout against the cached one, and
           record the run as offline (C3; ops/scripts/fresh-source.sh)
+      --partner-key <BASE64>
+          Phase 5: the partner's verifying key, as read aloud on the call
+      --mock <DIR>
+          Run against a fixture directory instead of hosts: no registry, no transport, deterministic
+          (goatbuilder-conformance.md §"The fixture")
       --partner-ca-fingerprint <SHA256>
           Phase 5: the partner's CA fingerprint, as read aloud on the call
       --agreement-digest <SHA256>
           Phase 6: the agreement digest, as compared with the partner
-      --mock <DIR>
-          Run against a fixture directory instead of hosts: no registry, no transport, deterministic
-          (goatbuilder-conformance.md §"The fixture")
-      --approve-admission <SHA256>
-          Phase 10: approve exactly this admission digest, after reading what our core will admit.
-          --yes never approves it
       --lang <TAG>
           Language for help and error explanations (a tag such as fr, uk, de); output a pipeline
           reads stays English. Default: the OS locale [env: GOAT_LANG=]
+      --approve-admission <SHA256>
+          Phase 10: approve exactly this admission digest, after reading what our core will admit.
+          --yes never approves it
       --color <COLOR>
           Color the table's ok/FAIL glyph and verdict (auto|always|never). `auto` colors only a
           terminal; NO_COLOR and CLICOLOR_FORCE override. JSON and YAML are never colored [default:
           auto] [possible values: auto, always, never]
       --review-in-pr
           Phase 10: write what our core would admit for review in a pull request, and stop
-      --env <ENV>
-          The environment the peering is declared on (checked against goatbuilder.yaml peerings:)
   -v, --verbose
           Log what a run does — the external commands it shells out to, and the network phase of
           `update` — to stderr, so `-o json|yaml` stays a clean document. Or set
           RUST_LOG=goatbuilder=debug
-      --as <SOVEREIGN>
-          Which party we are (default: read from the declaration)
+      --env <ENV>
+          The environment the peering is declared on (checked against goatbuilder.yaml peerings:)
       --timeout <SECS>
           Seconds to bound the connect/reach phase before failing fast — the one phase that can
           block on an unreachable host (`update`'s fetch of the served version). Does NOT cap a
           play's own run or the binary download (stall-bounded). Also reads GOATBUILDER_TIMEOUT
           [env: GOATBUILDER_TIMEOUT=]
+      --as <SOVEREIGN>
+          Which party we are (default: read from the declaration)
       --edge-group <EDGE_GROUP>
           The ansible group the edge runs in (default <peering>_edge)
       --work <WORK>
