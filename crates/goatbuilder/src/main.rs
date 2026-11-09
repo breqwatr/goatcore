@@ -420,7 +420,7 @@ pub enum Cmd {
     /// the one writer, the edge deployed, the transport the agreement chose
     /// opened, acceptance in all four tiers. Replaces
     /// ops/scripts/peering-standup.sh step for step.
-    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, disable_help_subcommand = true)]
     Federate {
         /// One stage alone instead of the whole peering.
         #[command(subcommand)]
