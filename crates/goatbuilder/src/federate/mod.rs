@@ -38,6 +38,7 @@ use crate::config;
 use crate::{Check, Report, EXIT_OK, EXIT_REFUSED};
 
 pub mod hostalloc;
+pub mod hostfw;
 pub mod plan;
 pub mod preflight;
 
