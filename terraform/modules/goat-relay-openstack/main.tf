@@ -93,6 +93,9 @@ resource "openstack_compute_instance_v2" "relay" {
   name        = local.resource_name
   flavor_name = var.flavor_name
   key_pair    = var.key_pair
+  # The keypair reaches the host through cloud-init; a config drive carries it
+  # when the metadata service does not answer at first boot.
+  config_drive = true
 
   block_device {
     uuid                  = data.openstack_images_image_v2.relay.id
