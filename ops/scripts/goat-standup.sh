@@ -205,22 +205,36 @@ if isinstance(d, dict) and d.get("preset") == "lite":
     lite = d.get("lite") or {}
     # name on the first line, the declared administrator on the second, and on the
     # third the AWS profile of a goatlite grown to the internet (lite.internet, its
-    # aws_profile or else the name), empty for a LAN goatlite
+    # aws_profile or else the name), empty for a LAN goatlite, and on the fourth its
+    # relay certificate contact (acme_email or else the administrator)
     print(str(lite.get("name", "")).strip())
     print(str(lite.get("admin", "")).strip())
     inet = lite.get("internet")
     print(str((inet.get("aws_profile") or lite.get("name", "")) if isinstance(inet, dict) else "").strip())
+    print(str((inet.get("acme_email") or lite.get("admin", "")) if isinstance(inet, dict) else "").strip())
 PY
 )" || lite_rc=$?
   [ "$lite_rc" = 0 ] || { echo "goat-standup: refusing to plan: fix $REPO/goatlite.yaml (or move it aside), then re-run" >&2; exit 2; }
   lite_admin="$(printf '%s\n' "$lite_name" | sed -n 2p)"
   lite_aws="$(printf '%s\n' "$lite_name" | sed -n 3p)"
+  lite_relay_contact="$(printf '%s\n' "$lite_name" | sed -n 4p)"
   lite_name="$(printf '%s\n' "$lite_name" | sed -n 1p)"
   if [ -n "$lite_name" ] && [ "$lite_name" = "$SITE" ]; then
     python3 "$REPO/ops/goatbuilder/validate.py" "$REPO/goatlite.yaml" >&2 \
       || { echo "goat-standup: goatlite.yaml does not validate; fix it, then re-run" >&2; exit 2; }
     LITE=1; LITE_INTERNET_AWS="$lite_aws"
   fi
+fi
+
+# A goatlite grown to the internet has no relay group_vars of its own: phase 7's
+# relay play reads its certificate contact from the private vars file, as data
+# (exported, read with printenv), and turns the relays' legacy dnsmasq off, since
+# its mesh DNS is CoreDNS on the box (goatbuilder's RELAY_CONTACT_VAR does the same).
+RELAY_LITE_FMT=""; RELAY_LITE_ARG=""
+if [[ "${LITE}" == 1 && -n "${lite_relay_contact:-}" ]]; then
+  export GOAT_RELAY_CERTBOT_EMAIL="$lite_relay_contact"
+  RELAY_LITE_FMT='relay_certbot_email: "%s"\ndeploy_dnsmasq: false\n'
+  RELAY_LITE_ARG=' "$(printenv GOAT_RELAY_CERTBOT_EMAIL)"'
 fi
 
 # Phase 12's dependency graph, the same file `goatbuilder standup` reads
@@ -955,7 +969,7 @@ step 7 T "[internet] generate relay inventory from terraform" \
 # readable in `ps` output. The file is written
 # under umask 077 and removed on the way out.
 step 7 A "[internet] relay tier (coturn + rathole + TLS renewal)" \
-  "cd '$REPO/ops/ansible' && umask 077 && VF=\$(mktemp -t goat-relay-vars.XXXXXX) && printf 'nb_relay_auth_secret: \"%s\"\nrelay_secret: \"%s\"\ncloudflare_api_token: \"%s\"\n' \"\$(printenv ${SITE_UPPER}_RELAY_SECRET)\" \"\$(printenv ${SITE_UPPER}_RELAY_SECRET)\" \"\$(printenv CLOUDFLARE_API_TOKEN_${SITE_UPPER})\" > \"\$VF\" && $ANSIBLE_PRE -i inventory/hosts-$SITE.ini relay-server.yml -e @\"\$VF\"; rc=\$?; rm -f \"\$VF\"; exit \$rc"
+  "cd '$REPO/ops/ansible' && umask 077 && VF=\$(mktemp -t goat-relay-vars.XXXXXX) && printf 'nb_relay_auth_secret: \"%s\"\nrelay_secret: \"%s\"\ncloudflare_api_token: \"%s\"\n${RELAY_LITE_FMT}' \"\$(printenv ${SITE_UPPER}_RELAY_SECRET)\" \"\$(printenv ${SITE_UPPER}_RELAY_SECRET)\" \"\$(printenv CLOUDFLARE_API_TOKEN_${SITE_UPPER})\"${RELAY_LITE_ARG} > \"\$VF\" && $ANSIBLE_PRE -i inventory/hosts-$SITE.ini relay-server.yml -e @\"\$VF\"; rc=\$?; rm -f \"\$VF\"; exit \$rc"
 fi
 
 # Phase 7. [joiner+internet] Wire this site into the FOUNDER's relay ingress dispatch
@@ -1081,9 +1095,12 @@ fi
 #     and then applies the declared Default-policy action (enforce does all that
 #     mode=apply does first), each play's asserts unchanged. Uses the bootstrap
 #     token from phase 11. A joiner applies nothing: its account IS the founder's.
+#     On the internet profile phase 7 serves the NetBird API with a public (ACME)
+#     certificate, so the plays verify it against the public roots (netbird_api_ca).
 if [ "$JOINER" = 0 ]; then
+API_CA_EV=""; [ "$PROFILE" = internet ] && API_CA_EV=" -e netbird_api_ca=public"
 step 12 A "declared NetBird ACL: groups, then policies, then enforce (one play run)" \
-  "cd '$REPO/ops/ansible' && ansible-playbook -i localhost, --connection local netbird-acl-bootstrap.yml netbird-acl-cutover.yml -e target_site=$SITE -e mode=enforce -e confirm_cutover=YES -e netbird_mgmt_url=$MGMT_URL_W"
+  "cd '$REPO/ops/ansible' && ansible-playbook -i localhost, --connection local netbird-acl-bootstrap.yml netbird-acl-cutover.yml -e target_site=$SITE -e mode=enforce -e confirm_cutover=YES -e netbird_mgmt_url=$MGMT_URL_W$API_CA_EV"
 fi
 step 12 GATE "the live NetBird account holds only the declared ACL for $ACL_SITE, and no All-group rule" \
   "python3 '$REPO/ops/scripts/netbird-policy-posture.py' $ACL_SITE_Q --url $MGMT_URL_W --token-env $(sh_word "${ACL_UPPER}_NB_API_TOKEN")"
@@ -1125,9 +1142,12 @@ fi
 #      reached by mesh IP (its cert carries the IP SAN, not a DNS name). Running
 #      mesh CoreDNS there rendered a Corefile and then died in the drift-guard's
 #      awk on the never-generated zone file. Skip it when no zone exists.
+#      generate-mesh-hosts.py rewrites only a zone file that already exists, so a
+#      site that declares isitup_services and has none yet (a goatlite, whose
+#      phase 8 has just recorded mesh_ip_a) gets it created first (--init).
 if [ "$PROFILE" = internet ]; then
 step 12 A "[internet] mesh CoreDNS (only if this site has a mesh zone; joiners use the founder's DNS)" \
-  "cd '$REPO' && python3 ops/dns/generate-mesh-hosts.py && { if [ -f ops/dns/$SITE/mesh-hosts ]; then cd ops/ansible && $ANSIBLE_PRE ${INV[*]} goat-coredns.yml --limit $GROUP; else echo '    no ops/dns/$SITE/mesh-hosts — this site declares no mesh zone (a joiner on the founder DNS plane); skipping mesh CoreDNS'; fi; }"
+  "cd '$REPO' && { [ -f ops/dns/$SITE/mesh-hosts ] || ! grep -rqs '^isitup_services:' ops/ansible/group_vars/$GROUP/ || python3 ops/dns/generate-mesh-hosts.py --init $SITE; } && python3 ops/dns/generate-mesh-hosts.py && { if [ -f ops/dns/$SITE/mesh-hosts ]; then cd ops/ansible && $ANSIBLE_PRE ${INV[*]} goat-coredns.yml --limit $GROUP; else echo '    no ops/dns/$SITE/mesh-hosts — this site declares no mesh zone (a joiner on the founder DNS plane); skipping mesh CoreDNS'; fi; }"
 fi
 
 # Phase 12. goat-zenoh-portal — the registry, certificate minting and the grant rows

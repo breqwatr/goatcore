@@ -388,6 +388,10 @@ pub fn site_inputs(repo: &Path, s: &Site, o: &Options, env: Env) -> Vec<Input> {
             site_rule(&format!("<site, - as _>_{suffix}_hosts")),
         ));
     }
+    if let Some(e) = &s.relay_certbot_email {
+        // A goatlite's relay certificate contact reaches phase 7 as data, like the owner.
+        v.push(Input::new(standup::RELAY_CONTACT_VAR, e.clone(), lite(repo, &["internet", "acme_email"])));
+    }
     v.push(Input::new(
         "breakglass_inventory",
         format!("inventory/{site}-breakglass-nodes.ini"),
@@ -463,6 +467,7 @@ pub(super) fn fixed(site: &str) -> Vec<Input> {
         fixed("lan_tags", "lan-dns,traefik,stun", "the LAN service surface (standup phase 10)"),
         fixed("mode", "enforce", "the declared NetBird ACL is applied in enforce mode (standup phase 12)"),
         fixed("confirm_cutover", "YES", "the ACL cutover is confirmed by running the phase (standup phase 12)"),
+        fixed("netbird_api_ca", "public", "on the internet profile phase 7 serves the NetBird API with an ACME certificate (standup phase 12)"),
         fixed("relay_target", "goat_relay_hosts", "the relay ingress group a joiner is wired into"),
         fixed("target_site", site, "the site itself"),
         Input::new("VF", "$(mktemp -t goat-relay-vars.XXXXXX)", Source::derived("mktemp, when standup phase 7 runs", "a private file for the relay secrets, removed after the play")),
@@ -541,6 +546,7 @@ mod tests {
             },
             lite,
             nb_token_available: false,
+            relay_certbot_email: None,
         }
     }
 

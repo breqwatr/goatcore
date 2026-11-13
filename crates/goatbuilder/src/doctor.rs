@@ -2867,7 +2867,7 @@ mod tests {
         assert_eq!(row, "goatlite pasture: one box pasture-box.lan as ubuntu, administrator admin@example.org, zone pasture.lan, environment pasture (group pasture_hosts, site pasture, class core), disk encryption on, secrets store env-file, LAN only");
         let mut l = cfg.lite.unwrap();
         l.disk_encryption = Some(false);
-        l.internet = Some(config::LiteInternet { zone: "pasture.example.org".into(), aws_profile: Some("pasture".into()), cloudflare_token_ref: None });
+        l.internet = Some(config::LiteInternet { zone: "pasture.example.org".into(), aws_profile: Some("pasture".into()), cloudflare_token_ref: None, acme_email: None });
         l.data_disk = Some("/dev/sda".into());
         l.ssh_pubkey = Some("~/.ssh/id_ed25519.pub".into());
         let row = lite_summary(&l, Some("sops"));

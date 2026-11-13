@@ -116,19 +116,19 @@ lite:
     relays:                        # default two relays, a and b, in two regions
       - {name: a, region: <an AWS region>}
     cloudflare_token_ref: op://…   # optional; see "Secrets" below
-    mesh_ip: 100.x.y.z             # set after phase 8 enrols the box
+    mesh_ip: 100.x.y.z             # optional; phase 8 records the box's mesh address itself
 ```
 
 **What the render writes.** `ops/scripts/goatlite-render.py` writes the same file set as §4, with these differences:
 
 | File | Internet value |
 |---|---|
-| `group_vars/<name>_hosts/vars.yml` | `has_acme: true`, `dashboard_cert_delivery_mode: acme`, `mgmt_dynamic_cert_mode: acme`, `acme_email`; `site_dns_zone`, `public_mgmt_fqdn` and `site_enrollment_dns` all `netbird.<zone>` (traefik-acme.yml requires the first two equal on a site carrying Ory); `relay_addresses` `rels://goat-relay-<relay>.<zone>:33073` and `stun_hosts` per relay; `aws_profile`; `lan_coredns_enabled: false` and no `lan_dns_*` or `stun_host`; `mesh_coredns_port: 5353`; the portal and per-service routers on the `le` resolver behind `mesh-only-allowlist@file`; the router bound to `mesh_ip_a`; the four OIDC client secrets phase 10 registers bound as env lookups |
+| `group_vars/<name>_hosts/vars.yml` | `has_acme: true`, `dashboard_cert_delivery_mode: acme`, `mgmt_dynamic_cert_mode: acme`, `acme_email`; `site_dns_zone`, `public_mgmt_fqdn` and `site_enrollment_dns` all `netbird.<zone>` (traefik-acme.yml requires the first two equal on a site carrying Ory); `relay_addresses` `rels://goat-relay-<relay>.<zone>:33073` and `stun_hosts` per relay; `aws_profile`; `lan_coredns_enabled: false` and no `lan_dns_*` or `stun_host`; `mesh_coredns_port: 5353`; the portal and per-service routers on the `le` resolver behind `mesh-only-allowlist@file`; the router bound to `mesh_ip_a`; `netbird_version`, the NetBird client the box runs once phase 8 enrols it (mgmt-host-baseline.yml installs the client only when it is pinned); `isitup_services`, the service names mesh CoreDNS serves; the four OIDC client secrets phase 10 registers bound as env lookups |
 | `inventory/mgmt-hosts.ini` | `signal_uri=netbird.<zone>:443` |
 | `enrollment/manifests/<name>-certs.yaml` | the router as `zenoh.<name>.netbird.<zone>`; no LAN `mgmt-identity` or `dashboard-a` leaves (ACME serves those names) |
 | `terraform-<name>/main.tf` (new) | one `goat-relay` module per relay from `../terraform/modules/goat-relay`, with rathole ingress and coturn on, the apex `netbird.<zone>` as the round-robin name, an SSM staging bucket, and the `relays` and `ansible_ssm_bucket` outputs `generate-relays.sh` reads |
 | `inventory/relay-tls-posture.sh` (marker block) | `<name>) echo le-dns01 ;;` — generate-relays.sh refuses a goatnet with no posture |
-| `ops/dns/<name>/mesh-hosts` (new, once `mesh_ip` is set) | the apex and every service name at the mesh address, served by mesh CoreDNS in phase 12 |
+| `ops/dns/<name>/mesh-hosts` | not written by the render: phase 12 creates it from `isitup_services` with `ops/dns/generate-mesh-hosts.py --init`, every name at the mesh address phase 8 recorded, and mesh CoreDNS serves it |
 | `ops/dns/<name>/<lan zone>.hosts` | removed when its generated header is intact |
 
 The SPIRE trust domain and the CA stay as they were: both are locked once minted, so growing out renames neither. The ACL, pins, door and runner rows are the LAN ones.
@@ -137,7 +137,7 @@ The SPIRE trust domain and the CA stay as they were: both are locked once minted
 
 **What it checks.** The render refuses a zone under a LAN-only suffix (`.lan`, `.local`, `.internal`, `.home.arpa`), and after writing it checks the values of `vars.yml` (`internet_problems`): ACME on, the apex as the zone, the relay addresses and STUN hosts under the public zone, the mesh-only routes, no LAN setting left, and every secret an env lookup. `goatlite-render.py --site <name> --verify` runs that check alone. The required-inputs scan proves only that keys exist; this proves their values.
 
-**The standup.** When `goatlite.yaml` declares `lite.internet`, both drivers (`goat-standup.sh` and `goatbuilder standup`) default to the internet profile and run the plays with the AWS profile `GOAT_AWS_PROFILE`, else `lite.internet.aws_profile`, else the name; a LAN goatlite keeps `GOAT_AWS_MODE=none`. Growing a running LAN goatlite is a re-render and `standup --from 5`. Phase 8 enrols the box on its own mesh; the learner then sets `mesh_ip` and renders again, and the phase-8 router re-mint picks the address up from `mesh_ip_a`.
+**The standup.** When `goatlite.yaml` declares `lite.internet`, both drivers (`goat-standup.sh` and `goatbuilder standup`) default to the internet profile and run the plays with the AWS profile `GOAT_AWS_PROFILE`, else `lite.internet.aws_profile`, else the name; a LAN goatlite keeps `GOAT_AWS_MODE=none`. Growing a running LAN goatlite is a re-render and `standup --from 5`. Phase 8 enrols the box on its own mesh, records its address as `mesh_ip_a` and re-mints the router; phase 12 creates the mesh zone from the registry, with no re-render. Phase 7's relay play registers the relay certificates with `acme_email` (else `lite.admin`), passed as data in the play's private vars file, and turns the relays' dnsmasq off. Phase 12's ACL plays verify the NetBird API against the public roots (`netbird_api_ca=public`), since phase 7 gave it an ACME certificate; that holds for every internet-profile standup. Status: built.
 
 **Proof today.** Rendered from scratch and grown from a LAN render, each surface passes `goat-standup.sh <name> --plan` on the internet profile, `standup-required-inputs.py <name> --profile internet --no-secrets` with nothing missing, `standup-config-preflight.py <name>_hosts`, `--verify`, and the standup parity gate between the two drivers. `tests/test_goatlite_render_internet.py` holds the value checks and their negative controls. The `goatenv` repository carries a rendered internet example, `example-internet`, under `internet/`.
 

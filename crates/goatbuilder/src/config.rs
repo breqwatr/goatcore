@@ -91,6 +91,10 @@ pub struct LiteInternet {
     pub aws_profile: Option<String>,
     #[serde(default)]
     pub cloudflare_token_ref: Option<String>,
+    /// Let's Encrypt's account contact; the renderer's default is lite.admin.
+    /// The relay tier registers its certificates with the same address.
+    #[serde(default)]
+    pub acme_email: Option<String>,
 }
 
 /// The declared secrets posture (schema `secrets:`); the store is what the verbs

@@ -106,6 +106,10 @@ pub(crate) struct Site {
     /// `<UPPER>_NB_API_TOKEN` is available under the declared secrets posture,
     /// so a LAN site needs no phase-11 first-login step.
     pub(crate) nb_token_available: bool,
+    /// A goatlite grown to the internet: the contact its relay certificates are
+    /// registered with (lite.internet.acme_email, else lite.admin). A full
+    /// goatnet declares relay_certbot_email in its relay group_vars instead.
+    pub(crate) relay_certbot_email: Option<String>,
 }
 
 pub(crate) const INV: &str = "-i inventory/mgmt-hosts.ini -i inventory/mgmt-hosts-mesh.ini";
@@ -285,6 +289,9 @@ fn read_site_in(repo: &Path, o: &Options, env: &SiteEnv) -> Result<Site> {
     // phase 11 named a file on the host after it.
     let owner_email = lite_cfg.as_ref().and_then(|c| c.lite.as_ref()).map(|l| l.admin.clone())
         .unwrap_or_else(|| "$OWNER_EMAIL".to_string());
+    let relay_certbot_email = lite_cfg.as_ref().and_then(|c| c.lite.as_ref()).and_then(|l| {
+        l.internet.as_ref().map(|i| i.acme_email.clone().filter(|e| !e.is_empty()).unwrap_or_else(|| l.admin.clone()))
+    });
 
     let (obs, obs_why) = if o.skip_obs {
         (false, "--skip-obs".to_string())
@@ -360,6 +367,7 @@ fn read_site_in(repo: &Path, o: &Options, env: &SiteEnv) -> Result<Site> {
         obs_why,
         lite,
         nb_token_available,
+        relay_certbot_email,
     })
 }
 
@@ -528,7 +536,15 @@ fn plan(repo: &Path, s: &Site, o: &Options, resume: &str) -> Vec<Event> {
     if internet {
         ev.push(p(7, "A", "[internet] public TLS certificate (traefik-acme)".into(), format!("cd '{r}/ops/ansible' && {pre} {inv} traefik-acme.yml -e target={g} -e cf_api_token=\"$(printenv CLOUDFLARE_API_TOKEN_{u})\"")));
         ev.push(p(7, "T", "[internet] generate relay inventory from terraform".into(), format!("'{r}/ops/ansible/inventory/generate-relays.sh' {site} terraform-{site}")));
-        ev.push(p(7, "A", "[internet] relay tier (coturn + rathole + TLS renewal)".into(), format!("cd '{r}/ops/ansible' && umask 077 && VF=$(mktemp -t goat-relay-vars.XXXXXX) && printf 'nb_relay_auth_secret: \"%s\"\\nrelay_secret: \"%s\"\\ncloudflare_api_token: \"%s\"\\n' \"$(printenv {u}_RELAY_SECRET)\" \"$(printenv {u}_RELAY_SECRET)\" \"$(printenv CLOUDFLARE_API_TOKEN_{u})\" > \"$VF\" && {pre} -i inventory/hosts-{site}.ini relay-server.yml -e @\"$VF\"; rc=$?; rm -f \"$VF\"; exit $rc")));
+        // A goatlite has no relay group_vars of its own: its relay certificates are
+        // registered with its declared contact, and its mesh DNS is CoreDNS on the
+        // box (phase 12), not the relays' legacy dnsmasq.
+        let (lite_fmt, lite_arg) = if s.relay_certbot_email.is_some() {
+            ("relay_certbot_email: \"%s\"\\ndeploy_dnsmasq: false\\n", format!(" \"$(printenv {RELAY_CONTACT_VAR})\""))
+        } else {
+            ("", String::new())
+        };
+        ev.push(p(7, "A", "[internet] relay tier (coturn + rathole + TLS renewal)".into(), format!("cd '{r}/ops/ansible' && umask 077 && VF=$(mktemp -t goat-relay-vars.XXXXXX) && printf 'nb_relay_auth_secret: \"%s\"\\nrelay_secret: \"%s\"\\ncloudflare_api_token: \"%s\"\\n{lite_fmt}' \"$(printenv {u}_RELAY_SECRET)\" \"$(printenv {u}_RELAY_SECRET)\" \"$(printenv CLOUDFLARE_API_TOKEN_{u})\"{lite_arg} > \"$VF\" && {pre} -i inventory/hosts-{site}.ini relay-server.yml -e @\"$VF\"; rc=$?; rm -f \"$VF\"; exit $rc")));
         if s.joiner {
             ev.push(p(7, "A", format!("[joiner] wire {site} into the founder ({}) relay ingress + re-render", or_q(jfs)), format!("cd '{r}/ops/ansible' && {{ [ -n {jfs_q} ] || {{ echo 'joiner: join_founder_site not set in group_vars/{g}/vars.yml'; exit 1; }}; }} && {{ ls {hosts} >/dev/null 2>&1 || {{ echo {missing}; exit 1; }}; }} && {pre} -i {hosts} -i {alias} {inv} relay-ingress-add-site.yml -e target=goat_relay_hosts -e {founder} -e join_site={site}",
                 hosts = sh_word(&format!("inventory/hosts-{jfs}.ini")),
@@ -571,7 +587,11 @@ fn plan(repo: &Path, s: &Site, o: &Options, resume: &str) -> Vec<Event> {
         // One ansible-playbook run of the two plays, in order: groups, then the
         // cutover in enforce mode, which creates every declared policy before it
         // applies the Default-policy action (goatlite.md §11 measure 3).
-        ev.push(p(12, "A", "declared NetBird ACL: groups, then policies, then enforce (one play run)".into(), format!("cd '{r}/ops/ansible' && ansible-playbook -i localhost, --connection local netbird-acl-bootstrap.yml netbird-acl-cutover.yml -e target_site={site} -e mode=enforce -e confirm_cutover=YES -e netbird_mgmt_url={}", sh_word(&format!("https://{fqdn}")))));
+        // On the internet profile phase 7 serves the NetBird API with a public (ACME)
+        // certificate, so the plays verify it against the public roots, not the
+        // goatnet's own CA (netbird-acl-cutover.yml, netbird_api_ca).
+        let api_ca = if internet { " -e netbird_api_ca=public" } else { "" };
+        ev.push(p(12, "A", "declared NetBird ACL: groups, then policies, then enforce (one play run)".into(), format!("cd '{r}/ops/ansible' && ansible-playbook -i localhost, --connection local netbird-acl-bootstrap.yml netbird-acl-cutover.yml -e target_site={site} -e mode=enforce -e confirm_cutover=YES -e netbird_mgmt_url={}{api_ca}", sh_word(&format!("https://{fqdn}")))));
     }
     let acl_upper = s.acl_site.replace('-', "_").to_uppercase();
     ev.push(p(12, "GATE", format!("the live NetBird account holds only the declared ACL for {}, and no All-group rule", s.acl_site), format!("python3 '{r}/ops/scripts/netbird-policy-posture.py' {} --url {} --token-env {}", sh_quote(&s.acl_site), sh_word(&format!("https://{fqdn}")), sh_word(&format!("{acl_upper}_NB_API_TOKEN")))));
@@ -581,7 +601,11 @@ fn plan(repo: &Path, s: &Site, o: &Options, resume: &str) -> Vec<Event> {
         ev.push(p(12, "A", "netbird account baseline (mesh-DNS nameserver group; no policy)".into(), format!("cd '{r}/ops/ansible' && {pre} {inv} goat-netbird-account-init.yml --limit {g}")));
     }
     if internet {
-        ev.push(p(12, "A", "[internet] mesh CoreDNS (only if this site has a mesh zone; joiners use the founder's DNS)".into(), format!("cd '{r}' && python3 ops/dns/generate-mesh-hosts.py && {{ if [ -f ops/dns/{site}/mesh-hosts ]; then cd ops/ansible && {pre} {inv} goat-coredns.yml --limit {g}; else echo '    no ops/dns/{site}/mesh-hosts — this site declares no mesh zone (a joiner on the founder DNS plane); skipping mesh CoreDNS'; fi; }}")));
+        // generate-mesh-hosts.py rewrites only a zone file that already exists. A
+        // site that declares isitup_services and has none yet (a goatlite, whose
+        // phase 8 has just recorded mesh_ip_a) gets it created here; a joiner
+        // declares no registry and keeps using the founder's DNS.
+        ev.push(p(12, "A", "[internet] mesh CoreDNS (only if this site has a mesh zone; joiners use the founder's DNS)".into(), format!("cd '{r}' && {{ [ -f ops/dns/{site}/mesh-hosts ] || ! grep -rqs '^isitup_services:' ops/ansible/group_vars/{g}/ || python3 ops/dns/generate-mesh-hosts.py --init {site}; }} && python3 ops/dns/generate-mesh-hosts.py && {{ if [ -f ops/dns/{site}/mesh-hosts ]; then cd ops/ansible && {pre} {inv} goat-coredns.yml --limit {g}; else echo '    no ops/dns/{site}/mesh-hosts — this site declares no mesh zone (a joiner on the founder DNS plane); skipping mesh CoreDNS'; fi; }}")));
     }
     ev.push(p(12, "A", "portal (registry, certificate minting, grant rows)".into(), format!("cd '{r}/ops/ansible' && {pre} {inv} portal-deploy.yml -e target={g} -l 'mgmt-{site}-01*' -e postgres_superuser_password=\"$(printenv {u}_PG_PASS)\"")));
     if s.obs {
@@ -879,6 +903,10 @@ fn site_phase_command(repo: &Path, s: &Site, cmd: &str) -> Cmd {
 /// expands it once and never parses the address itself.
 pub(crate) const OWNER_VAR: &str = "GOAT_BOOTSTRAP_OWNER_EMAIL";
 
+/// The variable a goatlite's relay certificate contact reaches phase 7 in, the
+/// same way: the relay play's private vars file reads it, never the command line.
+pub(crate) const RELAY_CONTACT_VAR: &str = "GOAT_RELAY_CERTBOT_EMAIL";
+
 /// The bootstrap owner's word on a phase's command line: `"$OWNER_EMAIL"` when no
 /// administrator is declared, for that shell to expand as it always has;
 /// otherwise `"$(printenv GOAT_BOOTSTRAP_OWNER_EMAIL)"`, the variable `phase_env`
@@ -893,13 +921,17 @@ fn owner_word(owner: &str) -> String {
 }
 
 /// The values a site's phases read from their environment rather than from
-/// their command line: a declared administrator address, as data.
+/// their command line: a declared administrator address and a goatlite's relay
+/// certificate contact, as data.
 fn phase_env(s: &Site) -> Vec<(&'static str, String)> {
-    if s.owner_email == "$OWNER_EMAIL" {
-        Vec::new()
-    } else {
-        vec![(OWNER_VAR, s.owner_email.clone())]
+    let mut env = Vec::new();
+    if s.owner_email != "$OWNER_EMAIL" {
+        env.push((OWNER_VAR, s.owner_email.clone()));
     }
+    if let Some(e) = &s.relay_certbot_email {
+        env.push((RELAY_CONTACT_VAR, e.clone()));
+    }
+    env
 }
 
 /// `standup` on real hosts: the plan, printed; executed unless `--dry-run`.
@@ -1593,6 +1625,33 @@ mod tests {
         assert_eq!(manual, vec![11]);
     }
 
+    /// On the internet profile the NetBird API carries an ACME certificate, so the
+    /// ACL plays verify it against the public roots; a goatlite's relay play gets
+    /// its declared contact and no dnsmasq; and phase 12 creates the mesh zone
+    /// from the site's registry the first time. A LAN run and a full goatnet's
+    /// relay play are as they were.
+    #[test]
+    fn the_internet_profile_trusts_acme_and_creates_the_mesh_zone() {
+        let o = Options { env: "e", site: "zagros", profile: None, from: 1, to: 14, skip_obs: false, obs_only: false, dry_run: true, parallel: false, check: false };
+        let mut s = test_site(false);
+        s.profile = "internet".into();
+        let lines = phase_lines(&s, &o);
+        let find = |needle: &str| lines.iter().find(|l| l.2.contains(needle)).map(|l| l.2.clone()).unwrap();
+        assert!(find("netbird-acl-cutover.yml").ends_with(" -e netbird_api_ca=public"));
+        let relay = find("relay-server.yml");
+        assert!(!relay.contains("relay_certbot_email") && !relay.contains("deploy_dnsmasq"), "a full goatnet's relay vars are its own: {relay}");
+        assert!(find("goat-coredns.yml").starts_with(
+            "cd '/r' && { [ -f ops/dns/zagros/mesh-hosts ] || ! grep -rqs '^isitup_services:' ops/ansible/group_vars/zagros_hosts/ || python3 ops/dns/generate-mesh-hosts.py --init zagros; } && python3 ops/dns/generate-mesh-hosts.py && "));
+        s.relay_certbot_email = Some("a.learner@example.org".into());
+        let relay = phase_lines(&s, &o).into_iter().find(|l| l.2.contains("relay-server.yml")).unwrap().2;
+        assert!(relay.contains("\\nrelay_certbot_email: \"%s\"\\ndeploy_dnsmasq: false\\n' "), "{relay}");
+        assert!(relay.contains(&format!(" \"$(printenv {RELAY_CONTACT_VAR})\" > \"$VF\"")), "{relay}");
+        assert!(!relay.contains("a.learner@example.org"), "the address is data, not part of the line: {relay}");
+        assert!(phase_env(&s).contains(&(RELAY_CONTACT_VAR, "a.learner@example.org".to_string())));
+        let lan = phase_lines(&test_site(false), &o);
+        assert!(!lan.iter().any(|l| l.2.contains("netbird_api_ca")), "a LAN site keeps its own CA");
+    }
+
     /// Every step the standup applies now has a built way down or a reason it
     /// stays: no `designed` declaration is left, the router's compose path is
     /// the site's, the shared-project services stop by name, the tunnel client
@@ -1660,7 +1719,7 @@ mod tests {
             state_dir: t.display().to_string(), ansible_pre: String::new(), inv: "", profile: "lan".into(), joiner: false,
             join_founder_site: String::new(), join_founder_group: String::new(), acl_site: "zagros".into(), mgmt_fqdn: String::new(),
             intra_pair: false, obs: false, obs_why: String::new(), group_vars_exists: true, lite: false, nb_token_available: false,
-            owner_email: "$OWNER_EMAIL".to_string(),
+            owner_email: "$OWNER_EMAIL".to_string(), relay_certbot_email: None,
         };
         let mk = |id: &str, needs: &[&str], cmd: &str| Queued { id: id.into(), needs: needs.iter().map(|x| x.to_string()).collect(), label: id.into(), cmd: cmd.into() };
         // The repository root: a step runs through its ops/scripts/standup-phase-run.
@@ -1686,6 +1745,7 @@ mod tests {
             join_founder_site: if joiner { "alpha".into() } else { String::new() }, join_founder_group: if joiner { "alpha_hosts".into() } else { String::new() },
             acl_site: "zagros".into(), mgmt_fqdn: String::new(), intra_pair: false, obs: false, obs_why: String::new(),
             group_vars_exists: true, lite: false, nb_token_available: false, owner_email: "$OWNER_EMAIL".to_string(),
+            relay_certbot_email: None,
         }
     }
 
@@ -2030,6 +2090,7 @@ mod tests {
             join_founder_site: String::new(), join_founder_group: String::new(), acl_site: "pasture".into(), mgmt_fqdn: "mgmt.pasture.lan".into(),
             intra_pair: false, obs: false, obs_why: String::new(), group_vars_exists: false, lite, nb_token_available,
             owner_email: if lite { "a.learner@example.org".to_string() } else { "$OWNER_EMAIL".to_string() },
+            relay_certbot_email: None,
         }
     }
 
