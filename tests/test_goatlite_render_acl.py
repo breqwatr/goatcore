@@ -52,6 +52,29 @@ class Acl(unittest.TestCase):
                             and "INFRA" in r["destinations"] for r in entry["rules"]))
 
 
+    def test_machines_declare_what_the_mint_derives_and_reach_only_the_box(self):
+        # lite.machines (ADR 1116 §9): every group the mint can derive exists, or
+        # that machine's enrolment fails at the mgmt API; the gear classes reach
+        # the box's services and no participant; the rest are declared, not reached.
+        off = yaml.safe_load(render.acl_taxonomy_block(FACTS))["fixture"]
+        self.assertEqual([g["suffix"] for g in off["groups"]], ["INFRA", "PLATFORM-ADMIN", "DEVELOPER"])
+        f = dict(FACTS, machines=True)
+        declared = {g["suffix"] for g in yaml.safe_load(render.acl_taxonomy_block(f))["fixture"]["groups"]}
+        gear, derived = render.mint_vocabulary()
+        self.assertLessEqual(set(gear), declared)
+        self.assertIn("KID", declared)
+        gear_names = {g["suffix"] for g in render.gear_groups()}
+        for rule in yaml.safe_load(render.acl_intents_block(f))["fixture"]["rules"]:
+            lateral = rule["sources"] + rule["destinations"]
+            if "INFRA" not in lateral:
+                self.assertFalse(gear_names & set(lateral), f"{rule['name']!r} gives a machine lateral reach")
+            for group in lateral:
+                self.assertIn(group, declared)
+        unreached = declared - gear_names - {"INFRA", "PLATFORM-ADMIN", "DEVELOPER"}
+        self.assertTrue(unreached <= derived, unreached)
+        rows = yaml.safe_load(render.acl_tests_block(f))["fixture"]
+        self.assertEqual(len(rows), 8)
+
     def test_the_render_writes_assertions_because_a_silent_scope_is_not_a_pass(self):
         # `goat acl test <name>` fails on a scope with no assertions, and the
         # acceptance row goat-acl-declaration-holds reads that verb. The render

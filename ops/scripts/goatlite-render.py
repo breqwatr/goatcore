@@ -167,8 +167,11 @@ def load_config(path: Path, site: str) -> dict:
     if registry and not IMAGE_REGISTRY.match(registry):
         raise Refuse(f"lite.image_registry {registry!r} must be <host>[:<port>]/<namespace>, "
                      "such as 127.0.0.1:5000/goat (ops/recipes/local-registry/README.md)")
+    machines = lite.get("machines", False)
+    if not isinstance(machines, bool):
+        raise Refuse("lite.machines must be true or false")
     unknown = set(lite) - {"name", "host", "ssh_user", "admin", "zone", "disk_encryption", "data_disk", "ssh_pubkey",
-                           "internet", "image_registry"}
+                           "internet", "image_registry", "machines"}
     if unknown:
         raise Refuse(f"lite: unknown key(s) {', '.join(sorted(unknown))}")
     try:
@@ -177,7 +180,7 @@ def load_config(path: Path, site: str) -> dict:
         is_ip = False
     return {"name": name, "host": host, "user": user, "admin": admin, "zone": zone,
             "disk_encryption": enc, "data_disk": disk, "host_is_ip": is_ip, "ssh_pubkey": pubkey_path,
-            "image_registry": registry,
+            "image_registry": registry, "machines": machines,
             "internet": internet}
 
 
@@ -374,6 +377,13 @@ def sign_intent(f: dict, rep: "Report") -> None:
 
 def vars_yml(f: dict) -> str:
     n, up, zone, host = f["name"], f["upper"], f["zone"], f["host"]
+    # lite.machines (ADR 1116 §9): the portal mints each enrolled machine's
+    # single-use setup key itself, with the portal-mint identity's token, the
+    # variable ops/netbird/service-identities.yaml names for it.
+    machine_mint = (f"""# Machine enrolment (lite.machines): `goat machine enroll` gets a setup key into the KID group.
+portal_mesh_key_mint_enabled: true
+portal_netbird_api_token_envvar: "{up}_PORTAL_NB_SVC_TOKEN"
+""" if f.get("machines") else "")
     if f["disk_encryption"]:
         luks = f"""# -- Disk encryption: ON (goatnet-standup.md decision 1; os-baseline-and-luks.md R4) --
 # One data disk (goatlite.yaml data_disk, default /dev/nvme0n1 — CHECK IT: phase 2
@@ -781,7 +791,7 @@ portal_ca_root_cert: "/etc/{n}-ca/root-cert.pem"
 portal_cert_sign_ca_id: "{{{{ goat_ca_id }}}}"
 portal_bundle_create_bin: "/usr/local/bin/bundle-create"
 portal_operator_api_key: "{{{{ lookup('env', '{up}_PORTAL_OPERATOR_API_KEY') }}}}"
-portal_traefik_mesh_only_middleware: "{mesh_mw}"
+{machine_mint}portal_traefik_mesh_only_middleware: "{mesh_mw}"
 
 # -- Onboarding-email environment identity (goatnet-turnkey-standup.md) -------
 id_admin_console_notify_goatnet_tagline: "{n} goatlite"
@@ -1459,7 +1469,7 @@ def doors_block(f: dict) -> str:
 
 def acl_taxonomy_block(f: dict) -> str:
     n, up = f["name"], f["upper"]
-    return f"""  {n}:
+    block = f"""  {n}:
     # goatlite (ADR 1213): the smallest taxonomy a goatnet can carry: the box,
     # its administrator, and every later participant. No observer or monitor
     # tiers until the goatnet grows them.
@@ -1471,10 +1481,75 @@ def acl_taxonomy_block(f: dict) -> str:
       description: "The administrator's own devices. Humans only."
     - suffix: DEVELOPER
       description: "Every later participant enrolled onto the mesh.\""""
+    if f.get("machines"):
+        # lite.machines: every group the mint can derive for a machine, or that
+        # machine's group would not exist and its enrolment would fail at the
+        # mgmt API (ops/ci/check-gear-class-parity.py checks the same).
+        groups = yaml.safe_dump(mint_groups(), sort_keys=False, allow_unicode=True, width=1000)
+        block += "\n" + "\n".join("    " + line for line in groups.rstrip("\n").splitlines())
+    return block
+
+
+MACHINES_GO = REPO / "ops/goat-zenoh-portal/internal/registry/machines.go"
+GEAR_TEMPLATES = ("netbird_exercise_gear_template", "netbird_exercise_template")
+
+
+def mint_vocabulary() -> tuple:
+    """What the portal's mint knows, from its Go source, read the way
+    ops/ci/check-gear-class-parity.py reads it, never copied here: the gear
+    classes (gearNodeClasses), and every group a node class derives
+    (nodeClassMeshGroups)."""
+    src = MACHINES_GO.read_text(encoding="utf-8")
+    gm = re.search(r"gearNodeClasses\s*=\s*map\[string\]bool\{(.*?)\n\t\}", src, re.S)
+    mm = re.search(r"nodeClassMeshGroups\s*=\s*map\[string\]\[\]string\{(.*?)\n\t\}", src, re.S)
+    if not gm or not mm:
+        raise Refuse(f"{MACHINES_GO.relative_to(REPO)} declares no gearNodeClasses or nodeClassMeshGroups; "
+                     "lite.machines cannot name the groups to declare")
+    gear = re.findall(r'"([A-Z][A-Z0-9-]*)"', gm.group(1))
+    body = "\n".join(l for l in mm.group(1).splitlines() if not l.strip().startswith("//"))
+    derived = set()
+    for _, vals in re.findall(r'"([A-Z][A-Z0-9-]*)"\s*:\s*\{([^}]*)\}', body):
+        derived |= set(re.findall(r'"([A-Z][A-Z0-9-]*)"', vals))
+    return gear, derived
+
+
+def template_groups() -> dict:
+    """Every group the taxonomy's templates define, by suffix, in template order."""
+    doc = yaml.safe_load((REPO / "ops/ansible/netbird_acl_taxonomy.yml").read_text(encoding="utf-8")) or {}
+    pool = {}
+    for tmpl in GEAR_TEMPLATES:
+        for g in (doc.get(tmpl) or {}).get("groups") or []:
+            pool.setdefault(g.get("suffix"), g)
+    return pool
+
+
+def gear_groups() -> list:
+    """Each gear class as the templates define it: the groups a goatlite's
+    enrolled machines land in, and the only ones its rules give reach."""
+    gear, _ = mint_vocabulary()
+    pool = template_groups()
+    missing = sorted(set(gear) - set(pool))
+    if missing:
+        raise Refuse(f"the mint knows gear class(es) no taxonomy template defines: {', '.join(missing)}")
+    return [g for suffix, g in pool.items() if suffix in gear]
+
+
+def mint_groups() -> list:
+    """The gear classes, then the other groups a node class derives that the box's
+    base three are not, as the templates define them. The latter are declared so
+    an enrolment does not fail, and get no rule: such a machine reaches nothing."""
+    _, derived = mint_vocabulary()
+    base = {"INFRA", "PLATFORM-ADMIN", "DEVELOPER"}
+    gear = gear_groups()
+    names = {g["suffix"] for g in gear}
+    return gear + [g for suffix, g in template_groups().items() if suffix in derived - base - names]
 
 
 def acl_intents_block(f: dict) -> str:
     n, up = f["name"], f["upper"]
+    # lite.machines: every gear class joins the box rules and nothing else, never
+    # the participant-to-participant rule or the administrator's any port.
+    kid = "".join(f", {g['suffix']}" for g in gear_groups()) if f.get("machines") else ""
     return f"""  {n}:
     # goatlite (ADR 1213): the zagros posture (operator intent 2026-07-15) shrunk
     # to one box. A: everyone <-> INFRA (the box). B: participants <->
@@ -1488,14 +1563,14 @@ def acl_intents_block(f: dict) -> str:
       - name: "infra → all (host reaches everyone)"
         description: "The box can initiate to every peer (probes, health, admin)."
         sources: [INFRA]
-        destinations: [PLATFORM-ADMIN, DEVELOPER]
+        destinations: [PLATFORM-ADMIN, DEVELOPER{kid}]
         protocol: all
         action: accept
         bidirectional: false
 
       - name: "all → infra (web/dns/fabric tcp)"
         description: "Every peer reaches the box's peer-facing TCP services: traefik :443, DNS, zenoh."
-        sources: [PLATFORM-ADMIN, DEVELOPER]
+        sources: [PLATFORM-ADMIN, DEVELOPER{kid}]
         destinations: [INFRA]
         protocol: tcp
         port_set: substrate
@@ -1504,7 +1579,7 @@ def acl_intents_block(f: dict) -> str:
 
       - name: "all → infra (dns/fabric udp)"
         description: "Every peer reaches the box's peer-facing UDP services: DNS, zenoh."
-        sources: [PLATFORM-ADMIN, DEVELOPER]
+        sources: [PLATFORM-ADMIN, DEVELOPER{kid}]
         destinations: [INFRA]
         protocol: udp
         port_set: substrate
@@ -1513,7 +1588,7 @@ def acl_intents_block(f: dict) -> str:
 
       - name: "all → infra (icmp)"
         description: "Every peer can ping the box (health, diagnostics)."
-        sources: [PLATFORM-ADMIN, DEVELOPER]
+        sources: [PLATFORM-ADMIN, DEVELOPER{kid}]
         destinations: [INFRA]
         protocol: icmp
         action: accept
@@ -1565,7 +1640,7 @@ def acl_tests_block(f: dict) -> str:
     administrator's any-port reach to the box."""
     tcp = ", ".join(f'"INFRA:{x}"' for x in substrate_ports("tcp"))
     udp = ", ".join(f'"INFRA:{x}"' for x in substrate_ports("udp"))
-    return f"""  {f['name']}:
+    tests = f"""  {f['name']}:
     # goatlite (ADR 1213): written by ops/scripts/goatlite-render.py with the
     # rules above; `goat acl test {f['name']}` evaluates them.
     - name: "every participant reaches the box's peer-facing TCP services"
@@ -1592,6 +1667,18 @@ def acl_tests_block(f: dict) -> str:
       src: DEVELOPER
       proto: tcp
       deny: ["INFRA:22"]"""
+    if f.get("machines"):
+        gear = ", ".join(g["suffix"] for g in gear_groups())
+        tests += f"""
+    - name: "an enrolled machine reaches the box's peer-facing services"
+      src: [{gear}]
+      proto: tcp
+      accept: [{tcp}]
+    - name: "an enrolled machine reaches nobody but the box"
+      src: [{gear}]
+      proto: any
+      deny: ["PLATFORM-ADMIN:*", "DEVELOPER:*", "INFRA:22"]"""
+    return tests
 
 
 def ensure_acl_tests_key(path: Path, rep: "Report", check: bool) -> None:
