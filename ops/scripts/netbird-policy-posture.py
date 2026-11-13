@@ -82,7 +82,11 @@ def _tls_context(site: str):
     import ssl
     ca = REPO / "ops/enrollment/ca" / site / "root-cert.pem"
     if ca.is_file():
-        return ssl.create_default_context(cafile=str(ca))
+        # An internet goatnet serves this API with a public certificate, a LAN
+        # goatnet with its own CA: trust both.
+        ctx = ssl.create_default_context()
+        ctx.load_verify_locations(cafile=str(ca))
+        return ctx
     return ssl.create_default_context()
 
 

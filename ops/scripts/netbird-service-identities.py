@@ -236,7 +236,9 @@ class NetBird:
         # system store. Verification is never turned off.
         import ssl
         ca = REPO / "ops/enrollment/ca" / site / "root-cert.pem" if site else None
-        self.tls = ssl.create_default_context(cafile=str(ca)) if ca and ca.is_file() else ssl.create_default_context()
+        self.tls = ssl.create_default_context()
+        if ca and ca.is_file():
+            self.tls.load_verify_locations(cafile=str(ca))  # public certificate or the goatnet's own CA
 
     def call(self, method, path, body=None, token=None):
         req = urllib.request.Request(
