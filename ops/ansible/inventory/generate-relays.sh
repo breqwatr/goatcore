@@ -79,6 +79,10 @@ fi
 ENV_NAME="$1"
 TF_DIR_RELATIVE="$2"
 AUTH_MODE="${3:-auto}"
+# GOAT_AWS_MODE=none (ops/scripts/with-aws) declares a run with no AWS at all.
+[ "${GOAT_AWS_MODE:-}" = none ] && AUTH_MODE=none
+# The infrastructure tool that reads the tree: terraform, or tofu for OpenTofu.
+TF_BIN="${GOAT_TF_BIN:-terraform}"
 
 ENV_UPPER=$(echo "$ENV_NAME" | tr '[:lower:]-' '[:upper:]_')
 
@@ -240,6 +244,8 @@ elif [ "$AUTH_MODE" = "aws-vault" ]; then
   fi
   AWS_WRAP="aws-vault exec ${AWS_VAULT_PROFILE} --no-session --"
   echo "==> aws-vault profile: $AWS_VAULT_PROFILE (from $AWS_AUTH_SOURCE)"
+elif [ "$AUTH_MODE" = "none" ]; then
+  AWS_WRAP=""
 else
   echo "ERROR: unknown aws_auth_mode '$AUTH_MODE' (expected envvars or aws-vault)" >&2
   exit 67
@@ -266,9 +272,9 @@ echo "==> env=$ENV_NAME tf=$TF_DIR auth=$AUTH_MODE"
 # stdout pollution into the variable.
 echo "==> Reading 'relays' output from $TF_DIR_RELATIVE..."
 cd "$TF_DIR"
-RELAY_JSON=$($AWS_WRAP terraform output -json relays 2>/dev/null \
+RELAY_JSON=$($AWS_WRAP "$TF_BIN" output -json relays 2>/dev/null \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d))" 2>/dev/null || echo "")
-SSM_BUCKET=$($AWS_WRAP terraform output -json ansible_ssm_bucket 2>/dev/null \
+SSM_BUCKET=$($AWS_WRAP "$TF_BIN" output -json ansible_ssm_bucket 2>/dev/null \
   | python3 -c "import sys,json; print(json.load(sys.stdin))" 2>/dev/null || echo "")
 
 # Re-run the SAME command with stderr KEPT, only to have something true to say
@@ -280,7 +286,7 @@ SSM_BUCKET=$($AWS_WRAP terraform output -json ansible_ssm_bucket 2>/dev/null \
 # the one moment its error is the answer.
 TF_STDERR=""
 if [ -z "$RELAY_JSON" ] || [ "$RELAY_JSON" = "{}" ] || [ -z "$SSM_BUCKET" ]; then
-  TF_STDERR=$($AWS_WRAP terraform output -json relays 2>&1 >/dev/null | head -8 || true)
+  TF_STDERR=$($AWS_WRAP "$TF_BIN" output -json relays 2>&1 >/dev/null | head -8 || true)
 fi
 
 if [ -z "$RELAY_JSON" ] || [ "$RELAY_JSON" = "{}" ]; then
@@ -308,7 +314,7 @@ if [ -z "$RELAY_JSON" ] || [ "$RELAY_JSON" = "{}" ]; then
   echo "       ops/goatbuilder/goatbuilder.yaml, or set" >&2
   echo "       AWS_VAULT_PROFILE_${ENV_UPPER}=<profile> for this env." >&2
   else
-  echo "    1. AWS credentials — this run used \$$ACCESS_KEY_VAR / \$$SECRET_KEY_VAR." >&2
+  echo "    1. AWS credentials — this run used \$${ACCESS_KEY_VAR:-none} / \$${SECRET_KEY_VAR:-none}." >&2
   fi
   echo "    2. terraform init — an uninitialised tree cannot read remote state." >&2
   echo "    3. apply — the tree may genuinely have no relays yet." >&2
@@ -316,7 +322,11 @@ if [ -z "$RELAY_JSON" ] || [ "$RELAY_JSON" = "{}" ]; then
   exit 68
 fi
 
-if [ -z "$SSM_BUCKET" ]; then
+# A tree whose relays declare transport "ssh" (clouds without SSM) is reached
+# directly at its public address and has no bucket or stored SSH keys.
+RELAY_TRANSPORT=$(echo "$RELAY_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(sorted({v.get('transport','ssm') for v in d.values()})[0])")
+
+if [ "$RELAY_TRANSPORT" != "ssh" ] && [ -z "$SSM_BUCKET" ]; then
   echo "ERROR: 'ansible_ssm_bucket' output empty or unparseable in $TF_DIR_RELATIVE." >&2
   echo "       Apply first, or confirm the tree exposes 'ansible_ssm_bucket'." >&2
   if [ -n "$TF_STDERR" ]; then
@@ -340,6 +350,7 @@ fi
 chmod 700 "$KEY_DIR"
 
 for name in $RELAY_NAMES; do
+  [ "$RELAY_TRANSPORT" = "ssh" ] && break
   region=$(echo "$RELAY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['$name']['region'])")
   secret_name=$(echo "$RELAY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['$name']['ssh_key_secret_name'])")
   key_file="$KEY_DIR/${name}.pem"
@@ -364,13 +375,19 @@ cat > "$INVENTORY_FILE" <<HEADER
 # env=$ENV_NAME  terraform=$TF_DIR_RELATIVE
 # DO NOT EDIT — regenerated on every run.
 #
-# Connection: AWS SSM (SSH ports closed by default).
+# Connection: $([ "$RELAY_TRANSPORT" = "ssh" ] && echo "SSH to the relay's public address." || echo "AWS SSM (SSH ports closed by default).")
 # Re-generate when relays change or after a 'terraform apply'.
 
 [relay_servers]
 HEADER
 
 for name in $RELAY_NAMES; do
+  if [ "$RELAY_TRANSPORT" = "ssh" ]; then
+    public_ip=$(echo "$RELAY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['$name']['public_ip'])")
+    relay_url=$(echo "$RELAY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['$name']['relay_url'])")
+    echo "relay-${name} ansible_host=${public_ip} goat_relay_public_ip=${public_ip} relay_dns_name=${relay_url} goat_relay_advertised_addr=${relay_url}:33073" >> "$INVENTORY_FILE"
+    continue
+  fi
   instance_id=$(echo "$RELAY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['$name']['instance_id'])")
   region=$(echo "$RELAY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['$name']['region'])")
   rathole_secret=$(echo "$RELAY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['$name']['rathole_secret_name'])")
@@ -388,6 +405,11 @@ for name in $RELAY_NAMES; do
   echo "relay-${name} ansible_host=${instance_id} ansible_aws_ssm_region=${region} aws_region=${region} ansible_connection=community.aws.aws_ssm ansible_aws_ssm_s3_addressing_style=virtual ansible_aws_ssm_bucket_name=${SSM_BUCKET} ansible_ssh_private_key_file=${key_file} rathole_secret_name=${rathole_secret} relay_dns_name=${relay_url} goat_relay_advertised_addr=${relay_url}:33073" >> "$INVENTORY_FILE"
 done
 
+# SSH sessions have a home directory; only SSM needs the /tmp-rooted path, and
+# over SSH a root-owned /tmp path breaks later non-root tasks.
+RELAY_REMOTE_TMP_LINE="ansible_remote_tmp=/tmp/.ansible/tmp"
+[ "$RELAY_TRANSPORT" = "ssh" ] && RELAY_REMOTE_TMP_LINE=""
+
 cat >> "$INVENTORY_FILE" <<RELAYVARS
 
 [relay_servers:vars]
@@ -396,8 +418,15 @@ ansible_python_interpreter=/usr/bin/python3
 # SSM session user lacks a writable home dir; default ~/.ansible/tmp triggers
 # 'mkdir: cannot create directory /home/ubuntu: Permission denied' before
 # become escalates. Forcing a /tmp-rooted remote_tmp dodges that.
-ansible_remote_tmp=/tmp/.ansible/tmp
+${RELAY_REMOTE_TMP_LINE}
 RELAYVARS
+
+if [ "$RELAY_TRANSPORT" = "ssh" ]; then
+  cat >> "$INVENTORY_FILE" <<RATHOLE_LOCAL
+# No Secrets Manager here: rathole credentials stay on the controller.
+rathole_credentials_dir=${STATE_DIR%/}/rathole-credentials/${ENV_NAME}
+RATHOLE_LOCAL
+fi
 
 # Per-env relay-server flags. Legacy dev/test uses rathole for
 # mgmt-API forwarding; usareur-af prod uses Block 22 wg-cp0 silent
@@ -472,7 +501,7 @@ fi
 # ops/ansible/goat-relay-deploy.yml + goat-relay-tune.yml.
 echo ""
 echo "==> Reading 'goat_relays' output from $TF_DIR_RELATIVE..."
-GOAT_RELAY_JSON=$($AWS_WRAP terraform output -json goat_relays 2>/dev/null \
+GOAT_RELAY_JSON=$($AWS_WRAP "$TF_BIN" output -json goat_relays 2>/dev/null \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d))" 2>/dev/null || echo "")
 
 if [ -n "$GOAT_RELAY_JSON" ] && [ "$GOAT_RELAY_JSON" != "{}" ]; then

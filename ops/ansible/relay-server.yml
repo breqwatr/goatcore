@@ -45,10 +45,11 @@
           http://169.254.169.254/latest/meta-data/public-ipv4
       register: public_ip_result
       changed_when: false
+      when: goat_relay_public_ip is not defined
 
     - name: Set public IP fact
       ansible.builtin.set_fact:
-        vps_public_ip: "{{ public_ip_result.stdout | trim }}"
+        vps_public_ip: "{{ goat_relay_public_ip if goat_relay_public_ip is defined else (public_ip_result.stdout | trim) }}"
 
     # ==================================================================
     # Rathole — management forwarding (TCP 443 → mgmt host).
@@ -518,6 +519,31 @@
       when:
         - deploy_rathole | default(true) | bool
         - rathole_secret_name is defined
+        - rathole_public_key | default('') | length > 0
+
+    # Clouds without Secrets Manager: the same record, on the controller only.
+    - name: Create the controller's rathole credential directory
+      delegate_to: localhost
+      become: false
+      ansible.builtin.file:
+        path: "{{ rathole_credentials_dir }}"
+        state: directory
+        mode: "0700"
+      when:
+        - deploy_rathole | default(true) | bool
+        - rathole_credentials_dir is defined
+
+    - name: Store rathole credentials on the controller
+      delegate_to: localhost
+      become: false
+      ansible.builtin.copy:
+        dest: "{{ rathole_credentials_dir }}/{{ inventory_hostname }}.json"
+        content: "{{ {'token': rathole_auth_token, 'public_key': rathole_public_key, 'relay_ip': vps_public_ip} | to_json }}"
+        mode: "0600"
+      no_log: true
+      when:
+        - deploy_rathole | default(true) | bool
+        - rathole_credentials_dir is defined
         - rathole_public_key | default('') | length > 0
 
     # ==================================================================

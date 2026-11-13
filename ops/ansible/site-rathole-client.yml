@@ -55,10 +55,9 @@
     - name: Assert every relay names its region and rathole secret
       ansible.builtin.assert:
         that:
-          - hostvars[item].aws_region is defined
-          - hostvars[item].rathole_secret_name is defined
+          - hostvars[item].rathole_credentials_dir is defined or (hostvars[item].aws_region is defined and hostvars[item].rathole_secret_name is defined)
         fail_msg: >-
-          {{ item }} lacks aws_region or rathole_secret_name. Regenerate the relay
+          {{ item }} lacks rathole_credentials_dir, or aws_region and rathole_secret_name. Regenerate the relay
           inventory with generate-relays.sh after `terraform apply`.
         quiet: true
       loop: "{{ groups['relay_servers'] }}"
@@ -74,14 +73,18 @@
     # ==================================================================
     # Relay credentials
     # ==================================================================
-    - name: Fetch each relay's rathole credentials from Secrets Manager
+    - name: Fetch each relay's rathole credentials
       delegate_to: localhost
       become: false
-      ansible.builtin.shell: >
+      ansible.builtin.shell: >-
+        {% if hostvars[item].rathole_credentials_dir is defined %}
+        cat "{{ hostvars[item].rathole_credentials_dir }}/{{ item }}.json"
+        {% else %}
         {{ aws_cmd }} aws secretsmanager get-secret-value
         --region "{{ hostvars[item].aws_region }}"
         --secret-id "{{ hostvars[item].rathole_secret_name }}"
         --query SecretString --output text
+        {% endif %}
       register: relay_secrets_raw
       loop: "{{ groups['relay_servers'] }}"
       changed_when: false

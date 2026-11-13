@@ -46,10 +46,11 @@
           http://169.254.169.254/latest/meta-data/public-ipv4
       register: coturn_public_ip_result
       changed_when: false
+      when: goat_relay_public_ip is not defined
 
     - name: Set coturn_external_ip from detected public IP
       ansible.builtin.set_fact:
-        coturn_external_ip: "{{ coturn_public_ip_result.stdout | trim }}"
+        coturn_external_ip: "{{ goat_relay_public_ip if goat_relay_public_ip is defined else (coturn_public_ip_result.stdout | trim) }}"
 
   roles:
     - role: coturn
