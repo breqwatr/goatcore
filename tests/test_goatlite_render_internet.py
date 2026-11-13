@@ -141,10 +141,14 @@ class InternetValues(unittest.TestCase):
         gv = yaml.safe_load(render.vars_yml(f))
         self.assertEqual(gv["mesh_ip_a"], "198.51.100.7")
         self.assertEqual(render.internet_problems(gv, f), [])
-        zone = render.mesh_hosts(f)
-        self.assertTrue(zone.startswith(render.HEADER + "\n"))
-        self.assertIn("198.51.100.7  netbird.fixture.example.org", zone)
-        self.assertIn("198.51.100.7  dashboard.fixture.netbird.fixture.example.org", zone)
+
+    def test_the_box_gets_a_pinned_client_and_a_mesh_registry(self):
+        # mgmt-host-baseline.yml installs the NetBird client only when it is pinned,
+        # and phase 12 renders mesh CoreDNS from isitup_services.
+        self.assertEqual(self.GV["netbird_version"], render.NETBIRD_CLIENT_VERSION)
+        self.assertEqual([s["name"] for s in self.GV["isitup_services"]], list(render.MESH_SERVICES))
+        self.assertIn({"name": "portal", "fqdn": "portal.{{ site_id }}.{{ site_dns_zone }}"},
+                      self.GV["isitup_services"])
 
 
 class InternetFiles(unittest.TestCase):

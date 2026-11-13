@@ -31,7 +31,6 @@ internet-enrollable surface instead of the LAN one — the same files, with the 
 zone, ACME, relays and the relay tunnel in vars.yml, plus:
   terraform-<name>/main.tf                        the relays, their DNS and the SSM bucket   (whole file)
   ops/ansible/inventory/relay-tls-posture.sh      the goatnet's relay TLS posture, le-dns01 (marker block)
-  ops/dns/<name>/mesh-hosts                       the mesh CoreDNS zone, once lite.internet.mesh_ip is set
   .envrc.local.d/goatlite-<name>.refs             the Cloudflare token reference, under a reference store
 and no LAN DNS zone. The rendered internet values are checked before the run ends
 (internet_problems); `--verify` runs that check alone.
@@ -106,6 +105,13 @@ DEFAULT_RELAYS = ({"name": "a", "region": "us-east-2"}, {"name": "b", "region": 
 REF_PREFIXES = {"op://": "1password", "bao://": "openbao", "bw://": "vaultwarden"}
 RELAY_DATA_PORT = 33073     # the relay data plane (relay-server.yml, the goat-relay security group)
 RELAY_DNS_PREFIX = "goat-relay"  # terraform/modules/goat-relay: <prefix>-<relay name>.<zone>
+# The NetBird client the box runs once phase 8 enrols it on its own mesh: a pin,
+# because mgmt-host-baseline.yml installs the client only when netbird_version is set.
+NETBIRD_CLIENT_VERSION = "0.83.0"
+# The service names an internet goatlite serves in mesh CoreDNS. They are the
+# isitup_services registry ops/dns/generate-mesh-hosts.py renders the zone from
+# in phase 12 (isitup itself it adds on its own).
+MESH_SERVICES = ("dashboard", "auth", "oauth2", "mgmt", "portal", "zenoh")
 
 
 class Refuse(Exception):
@@ -427,8 +433,8 @@ luks_fido2_with_pin: false"""
   core + essential tiers only"""
     if inet:
         dns_server = """# No LAN name server: off-LAN peers resolve the service names through mesh
-# CoreDNS (phase 12), from ops/dns/<name>/mesh-hosts once lite.internet.mesh_ip
-# is set. No relay-health box on a goatlite.
+# CoreDNS (phase 12), from ops/dns/<name>/mesh-hosts, which phase 12 renders
+# from isitup_services below. No relay-health box on a goatlite.
 lan_coredns_enabled: false"""
         apex, izone = f["apex"], inet["zone"]
         tok = f"CLOUDFLARE_API_TOKEN_{up}"
@@ -475,11 +481,13 @@ id_admin_console_oauth2_proxy_client_secret: "{{{{ lookup('env', '{up}_ID_ADMIN_
         relays = relay_fqdns(f)
         stun = "\n".join(f"  - {r}" for r in relays)
         addrs = "\n".join(f'  - "rels://{r}:{RELAY_DATA_PORT}"' for r in relays)
+        mesh_registry = "\n".join(f'  - {{name: {svc}, fqdn: "{svc}.{{{{ site_id }}}}.{{{{ site_dns_zone }}}}"}}'
+                             for svc in MESH_SERVICES)
         mesh = inet["mesh_ip"]
         mesh_line = (f'mesh_ip_a: "{mesh}"' if mesh else
                      f'# Until phase 8 enrols the box, services bind its address; after it, set\n'
                      f'# lite.internet.mesh_ip in goatlite.yaml to the address `netbird status` shows\n'
-                     f'# and re-render: the router cert (phase 8 re-mint) and mesh CoreDNS follow it.\n'
+                     f'# and re-render. Phase 8 records it here on its own (standup-mesh-record.py).\n'
                      f'mesh_ip_a: "{host}"')
         relay_mesh = f"""# -- Signal / STUN / relay posture (internet: relays from terraform-{n}/) -------
 # One relay per lite.internet.relays entry, named as terraform/modules/goat-relay
@@ -501,7 +509,14 @@ aws_profile: "{inet['aws_profile']}"
 # The host enrols on its own mesh in phase 8; the router and mesh CoreDNS bind
 # the mesh address.
 install_netbird_daemon: true
-{mesh_line}"""
+netbird_version: "{NETBIRD_CLIENT_VERSION}"
+{mesh_line}
+
+# -- Service registry (mesh CoreDNS) ------------------------------------------
+# Phase 12 renders ops/dns/{n}/mesh-hosts from this list with
+# ops/dns/generate-mesh-hosts.py, every name at mesh_ip_a.
+isitup_services:
+{mesh_registry}"""
         resolver, mesh_mw = "le", "mesh-only-allowlist@file"
         svc_tls = "# ACME TLS for the per-service dynamic routers, mesh-only (traefik-acme.yml)."
     else:
@@ -825,20 +840,6 @@ def zone_hosts(f: dict) -> str:
              f"{ip}    {node} {node}.{zone}",
              f"{ip}    netbird.{zone}"]
     lines += [f"{ip}    {svc}.{n}.{zone}" for svc in ZONE_SERVICES]
-    return "\n".join(lines) + "\n"
-
-
-def mesh_hosts(f: dict) -> str:
-    """The mesh CoreDNS zone of a goatlite grown to the internet (goat-coredns.yml reads
-    ops/dns/<site>/mesh-hosts): the apex and every service name at the box's mesh
-    address, so enrolled peers reach the box over the mesh. Needs lite.internet.mesh_ip."""
-    n, sz, ip = f["name"], f["site_zone"], f["internet"]["mesh_ip"]
-    lines = [HEADER,
-             f"# Mesh zone for {sz}, served by goat-coredns.yml on the box's mesh address.",
-             "# Every name resolves to the one host's mesh IP (lite.internet.mesh_ip).",
-             "",
-             f"{ip}  {f['apex']}"]
-    lines += [f"{ip}  {svc}.{n}.{sz}" for svc in ZONE_SERVICES]
     return "\n".join(lines) + "\n"
 
 
@@ -2024,11 +2025,8 @@ def render(f: dict, check: bool) -> Report:
     if f.get("internet"):
         # Grown out: the LAN zone a first LAN render wrote is no longer served by any phase.
         generated_remove(lan_zone, rep, check, "removed (a LAN zone; the internet names live in mesh CoreDNS)")
-        mesh = REPO / "ops/dns" / f["name"] / "mesh-hosts"
-        if f["internet"]["mesh_ip"]:
-            whole_file(mesh, mesh_hosts(f), rep, check)
-        else:
-            rep.add(mesh, "not yet: set lite.internet.mesh_ip after phase 8 enrols the box, then re-render")
+        rep.add(REPO / "ops/dns" / f["name"] / "mesh-hosts",
+                "phase 12 renders it from isitup_services (ops/dns/generate-mesh-hosts.py)")
         whole_file(REPO / f"terraform-{f['name']}" / "main.tf", terraform_tf(f), rep, check)
         posture_file = REPO / "ops/ansible/inventory/relay-tls-posture.sh"
         if not posture_file.exists():
