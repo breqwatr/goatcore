@@ -456,7 +456,10 @@ def generate(env, gv_dir=None, inv_path=None):
     # A curl on the box reaching the box's own names: the box's resolver does not
     # ask the goatnet's CoreDNS, so on a goatlite the curl options that already
     # carry the goatnet's root (curl_ca_opt) also pin the portal name to the box.
-    if lite_host and "{{" not in lite_host and values.get("site_dns_zone"):
+    # An internet goatlite (ACME) resolves its names through mesh DNS and its
+    # portal admits only mesh sources, so the LAN pin would be refused there.
+    acme = (_extract(text, "has_acme") or "").strip().strip('"').lower() == "true"
+    if lite_host and not acme and "{{" not in lite_host and values.get("site_dns_zone"):
         pin = f"--resolve portal.{env}.{values['site_dns_zone']}:443:{lite_host.strip(chr(34))}"
         values["curl_ca_opt"] = (values.get("curl_ca_opt", "") + " " + pin).strip()
     # The person the portal identity rows look up: the declared value, else the
