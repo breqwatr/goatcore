@@ -71,12 +71,13 @@
 #   3      per-instance secrets                    yes       yes
 #   4      leaf certs + name snapshot              yes       yes
 #   5      mgmt-stack (site-bootstrap, the         yes       yes
-#          stack part), then relay-connect
+#          stack part), then the relay tier
+#          and relay-connect (internet)
 #   6      identity stack (Ory), then the rest     yes       yes
 #          of site-bootstrap (account seed); a
 #          joiner seeds from its founder and
 #          mirrors here
-#   7      public TLS + relay tier                 --        yes
+#   7      public TLS                              --        yes
 #   8      mesh-enroll host + re-mint router       --        yes (MANUAL)
 #   9      zenoh router + SPIRE (founder)          yes       yes
 #   10     LAN services  /  dashboard + OIDC       lan svc   dashboard+oidc
@@ -853,6 +854,46 @@ pull_join 5
 step 5 A "mgmt-stack (site-bootstrap up to the account seed; the seed needs Ory and runs in phase 6)" \
   "cd '$REPO/ops/ansible' && $ANSIBLE_PRE ${INV[*]} $SB $BOOTSTRAP_EV_P1 --skip-tags after-ory"
 
+# Phase 5. [internet] RELAY TIER — inventory, then deploy. The phase this script did
+#     not have, which is how a goatnet reaches "done" with relay VPSes that no
+#     play can reach.
+#
+#     A goatnet can have relay VPSes with coturn running on them and NO ansible
+#     inventory covering any of them, so neither relay-server.yml nor
+#     goat-relay-deploy.yml can target them and the netbird relay tier is never
+#     deployable. Nothing reports that, because
+#     an absent phase emits nothing. The relay tier is what every peer pair
+#     that cannot form direct P2P falls back to; without it a goatnet works
+#     until two peers happen to sit behind unfriendly NAT, and then does not.
+#
+#     Two steps on purpose. generate-relays.sh reads the terraform `relays`
+#     output and writes inventory/hosts-<site>.ini; relay-server.yml then
+#     installs coturn, rathole and the certbot renewal path onto those hosts.
+#     Running the second without the first silently matches zero hosts.
+#
+#     LAN goatnets have no relay tier and skip this whole block: enrollment is
+#     on the LAN and there is nothing to relay through.
+#
+#     It runs before relay-connect: the client reads the relay inventory and
+#     the rathole credentials this block writes, and a fresh goatnet has neither.
+if [ "$PROFILE" = internet ]; then
+step 5 T "[internet] generate relay inventory from terraform" \
+  "'$REPO/ops/ansible/inventory/generate-relays.sh' $SITE terraform-$SITE"
+
+# The token is asserted by the play itself (>= 30 chars, F-500) rather than
+# checked here — `$(printenv X)` on an unset variable yields an empty string
+# with no error, which is precisely how a relay fleet ends up with credentials
+# that cannot renew and certificates that expire ninety days later.
+# Secrets go through a mode-0600 vars file, NOT `-e key=value`. Anything on an
+# ansible command line lands in the process table, where `ps` shows it to every
+# process on the machine for the life of the run, and into any shell history or
+# session log that captures the invocation. A live Cloudflare API token would be
+# readable in `ps` output. The file is written
+# under umask 077 and removed on the way out.
+step 5 A "[internet] relay tier (coturn + rathole + TLS renewal)" \
+  "cd '$REPO/ops/ansible' && umask 077 && VF=\$(mktemp -t goat-relay-vars.XXXXXX) && printf 'nb_relay_auth_secret: \"%s\"\nrelay_secret: \"%s\"\ncloudflare_api_token: \"%s\"\n${RELAY_LITE_FMT}' \"\$(printenv ${SITE_UPPER}_RELAY_SECRET)\" \"\$(printenv ${SITE_UPPER}_RELAY_SECRET)\" \"\$(printenv CLOUDFLARE_API_TOKEN_${SITE_UPPER})\"${RELAY_LITE_ARG} > \"\$VF\" && $ANSIBLE_PRE -i inventory/hosts-$SITE.ini relay-server.yml -e @\"\$VF\"; rc=\$?; rm -f \"\$VF\"; exit \$rc"
+fi
+
 # Phase 5. [internet] Connect the mgmt host to its relays over the rathole tunnel.
 #     site-rathole-client.yml is the generic play; a site that keeps its own
 #     $SITE-rathole-client.yml gets that one instead. Uses the relay inventory too.
@@ -933,43 +974,6 @@ fi
 if [ "$PROFILE" = internet ]; then
 step 7 A "[internet] public TLS certificate (traefik-acme)" \
   "cd '$REPO/ops/ansible' && $ANSIBLE_PRE ${INV[*]} traefik-acme.yml -e target=$GROUP -e cf_api_token=\"\$(printenv CLOUDFLARE_API_TOKEN_${SITE_UPPER})\""
-fi
-
-# Phase 7. [internet] RELAY TIER — inventory, then deploy. The phase this script did
-#     not have, which is how a goatnet reaches "done" with relay VPSes that no
-#     play can reach.
-#
-#     A goatnet can have relay VPSes with coturn running on them and NO ansible
-#     inventory covering any of them, so neither relay-server.yml nor
-#     goat-relay-deploy.yml can target them and the netbird relay tier is never
-#     deployable. Nothing reports that, because
-#     an absent phase emits nothing. The relay tier is what every peer pair
-#     that cannot form direct P2P falls back to; without it a goatnet works
-#     until two peers happen to sit behind unfriendly NAT, and then does not.
-#
-#     Two steps on purpose. generate-relays.sh reads the terraform `relays`
-#     output and writes inventory/hosts-<site>.ini; relay-server.yml then
-#     installs coturn, rathole and the certbot renewal path onto those hosts.
-#     Running the second without the first silently matches zero hosts.
-#
-#     LAN goatnets have no relay tier and skip this whole block: enrollment is
-#     on the LAN and there is nothing to relay through.
-if [ "$PROFILE" = internet ]; then
-step 7 T "[internet] generate relay inventory from terraform" \
-  "'$REPO/ops/ansible/inventory/generate-relays.sh' $SITE terraform-$SITE"
-
-# The token is asserted by the play itself (>= 30 chars, F-500) rather than
-# checked here — `$(printenv X)` on an unset variable yields an empty string
-# with no error, which is precisely how a relay fleet ends up with credentials
-# that cannot renew and certificates that expire ninety days later.
-# Secrets go through a mode-0600 vars file, NOT `-e key=value`. Anything on an
-# ansible command line lands in the process table, where `ps` shows it to every
-# process on the machine for the life of the run, and into any shell history or
-# session log that captures the invocation. A live Cloudflare API token would be
-# readable in `ps` output. The file is written
-# under umask 077 and removed on the way out.
-step 7 A "[internet] relay tier (coturn + rathole + TLS renewal)" \
-  "cd '$REPO/ops/ansible' && umask 077 && VF=\$(mktemp -t goat-relay-vars.XXXXXX) && printf 'nb_relay_auth_secret: \"%s\"\nrelay_secret: \"%s\"\ncloudflare_api_token: \"%s\"\n${RELAY_LITE_FMT}' \"\$(printenv ${SITE_UPPER}_RELAY_SECRET)\" \"\$(printenv ${SITE_UPPER}_RELAY_SECRET)\" \"\$(printenv CLOUDFLARE_API_TOKEN_${SITE_UPPER})\"${RELAY_LITE_ARG} > \"\$VF\" && $ANSIBLE_PRE -i inventory/hosts-$SITE.ini relay-server.yml -e @\"\$VF\"; rc=\$?; rm -f \"\$VF\"; exit \$rc"
 fi
 
 # Phase 7. [joiner+internet] Wire this site into the FOUNDER's relay ingress dispatch

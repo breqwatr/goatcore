@@ -504,6 +504,19 @@ fn plan(repo: &Path, s: &Site, o: &Options, resume: &str) -> Vec<Event> {
     ev.push(p(5, "A", "mgmt-stack (site-bootstrap up to the account seed; the seed needs Ory and runs in phase 6)".into(), format!("cd '{r}/ops/ansible' && {pre} {inv} {sb} {ev_p1} --skip-tags after-ory")));
     let internet = s.profile == "internet";
     if internet {
+        // The relay tier comes first: relay-connect reads the relay inventory
+        // and the rathole credentials the relay tier writes, and a fresh
+        // goatnet has neither until both steps have run.
+        ev.push(p(5, "T", "[internet] generate relay inventory from terraform".into(), format!("'{r}/ops/ansible/inventory/generate-relays.sh' {site} terraform-{site}")));
+        // A goatlite has no relay group_vars of its own: its relay certificates are
+        // registered with its declared contact, and its mesh DNS is CoreDNS on the
+        // box (phase 12), not the relays' legacy dnsmasq.
+        let (lite_fmt, lite_arg) = if s.relay_certbot_email.is_some() {
+            ("relay_certbot_email: \"%s\"\\ndeploy_dnsmasq: false\\n", format!(" \"$(printenv {RELAY_CONTACT_VAR})\""))
+        } else {
+            ("", String::new())
+        };
+        ev.push(p(5, "A", "[internet] relay tier (coturn + rathole + TLS renewal)".into(), format!("cd '{r}/ops/ansible' && umask 077 && VF=$(mktemp -t goat-relay-vars.XXXXXX) && printf 'nb_relay_auth_secret: \"%s\"\\nrelay_secret: \"%s\"\\ncloudflare_api_token: \"%s\"\\n{lite_fmt}' \"$(printenv {u}_RELAY_SECRET)\" \"$(printenv {u}_RELAY_SECRET)\" \"$(printenv CLOUDFLARE_API_TOKEN_{u})\"{lite_arg} > \"$VF\" && {pre} -i inventory/hosts-{site}.ini relay-server.yml -e @\"$VF\"; rc=$?; rm -f \"$VF\"; exit $rc")));
         // site-rathole-client.yml is the generic play; a site that keeps its
         // own <site>-rathole-client.yml gets that one instead.
         let rathole_play = site_play(repo, site, "rathole-client.yml");
@@ -535,16 +548,6 @@ fn plan(repo: &Path, s: &Site, o: &Options, resume: &str) -> Vec<Event> {
     }
     if internet {
         ev.push(p(7, "A", "[internet] public TLS certificate (traefik-acme)".into(), format!("cd '{r}/ops/ansible' && {pre} {inv} traefik-acme.yml -e target={g} -e cf_api_token=\"$(printenv CLOUDFLARE_API_TOKEN_{u})\"")));
-        ev.push(p(7, "T", "[internet] generate relay inventory from terraform".into(), format!("'{r}/ops/ansible/inventory/generate-relays.sh' {site} terraform-{site}")));
-        // A goatlite has no relay group_vars of its own: its relay certificates are
-        // registered with its declared contact, and its mesh DNS is CoreDNS on the
-        // box (phase 12), not the relays' legacy dnsmasq.
-        let (lite_fmt, lite_arg) = if s.relay_certbot_email.is_some() {
-            ("relay_certbot_email: \"%s\"\\ndeploy_dnsmasq: false\\n", format!(" \"$(printenv {RELAY_CONTACT_VAR})\""))
-        } else {
-            ("", String::new())
-        };
-        ev.push(p(7, "A", "[internet] relay tier (coturn + rathole + TLS renewal)".into(), format!("cd '{r}/ops/ansible' && umask 077 && VF=$(mktemp -t goat-relay-vars.XXXXXX) && printf 'nb_relay_auth_secret: \"%s\"\\nrelay_secret: \"%s\"\\ncloudflare_api_token: \"%s\"\\n{lite_fmt}' \"$(printenv {u}_RELAY_SECRET)\" \"$(printenv {u}_RELAY_SECRET)\" \"$(printenv CLOUDFLARE_API_TOKEN_{u})\"{lite_arg} > \"$VF\" && {pre} -i inventory/hosts-{site}.ini relay-server.yml -e @\"$VF\"; rc=$?; rm -f \"$VF\"; exit $rc")));
         if s.joiner {
             ev.push(p(7, "A", format!("[joiner] wire {site} into the founder ({}) relay ingress + re-render", or_q(jfs)), format!("cd '{r}/ops/ansible' && {{ [ -n {jfs_q} ] || {{ echo 'joiner: join_founder_site not set in group_vars/{g}/vars.yml'; exit 1; }}; }} && {{ ls {hosts} >/dev/null 2>&1 || {{ echo {missing}; exit 1; }}; }} && {pre} -i {hosts} -i {alias} {inv} relay-ingress-add-site.yml -e target=goat_relay_hosts -e {founder} -e join_site={site}",
                 hosts = sh_word(&format!("inventory/hosts-{jfs}.ini")),

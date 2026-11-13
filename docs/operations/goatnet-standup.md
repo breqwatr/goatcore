@@ -99,7 +99,7 @@ an instance of this procedure, not a second one
 Choose **LAN-only** when the deployment really is LAN-scoped, or to exercise the
 management stack in isolation — **not** as an on-ramp to an internet site.
 Growing a LAN GOAT-Net into an internet one is not free: it means adding the relay
-tier, the public DNS zone, ACME, and host mesh-enrollment (the relay-connect step of phase 5, and phases 7 and 8), none
+tier, the public DNS zone, ACME, and host mesh-enrollment (the relay tier and relay-connect in phase 5, and phases 7 and 8), none
 of which the LAN path stands up. If the thing you are ultimately building is
 internet-enrollable, build it that way from the start. The driver auto-detects
 the profile from the config (`dashboard_cert_delivery_mode: acme` means
@@ -378,7 +378,7 @@ run, a note or a log from before then uses the old numbers:
 | 5, 5b | 4 | leaf certs + name snapshot |
 | 6, 6b | 5 | mgmt stack, relay-connect |
 | 7, 7a, 7b, 7c | 6 | identity stack, re-run site-bootstrap, the joiner's seed and mirror |
-| 9, 9b, 9c | 7 | public TLS + relay tier |
+| 9, 9b, 9c | 7 | public TLS + relay tier (the relay tier runs in phase 5 since 2026-11-14) |
 | 10 | 8 | mesh enrolment (manual) |
 | 11, 11b | 9 | router + SPIRE |
 | 12 | 10 | dashboard + OIDC clients / LAN services |
