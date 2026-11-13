@@ -401,6 +401,41 @@
         quiet: true
   when: not (portal_cert_sign_fake | bool)
 
+# The same for bundle-create, when it is on: the compose file bind-mounts
+# portal_bundle_create_bin, and a missing source becomes a directory that
+# machine enrolment and vendor tarballs then fail against.
+- name: Assert the host bundle-create binary exists and is a FILE (bundle-create on)
+  block:
+    - name: Stat the host bundle-create binary
+      ansible.builtin.stat:
+        path: "{{ portal_bundle_create_bin }}"
+      register: portal_bundle_create_stat
+
+    - name: Build and install bundle-create (missing on the host)
+      ansible.builtin.include_tasks: bundle-create-install.yml
+      when: not portal_bundle_create_stat.stat.exists
+
+    - name: Stat the host bundle-create binary again
+      ansible.builtin.stat:
+        path: "{{ portal_bundle_create_bin }}"
+      register: portal_bundle_create_stat_after
+
+    - name: Refuse to deploy a portal whose bundle-create mount is a directory
+      ansible.builtin.assert:
+        that:
+          - portal_bundle_create_stat_after.stat.exists
+          - portal_bundle_create_stat_after.stat.isreg | default(false)
+        fail_msg: >-
+          {{ portal_bundle_create_bin }} on this host is
+          {{ 'a DIRECTORY (docker created it from a missing bind-mount source)'
+             if portal_bundle_create_stat_after.stat.isdir | default(false)
+             else 'missing' }}.
+          The portal bind-mounts it to mint the goat-cli bundle. A missing binary
+          is built and installed by the tasks above; a directory is removed by
+          hand (sudo rmdir {{ portal_bundle_create_bin }}), then re-run.
+        quiet: true
+  when: portal_bundle_create_bin | length > 0
+
 - name: Copy zenoh-trial onboarding packet from controller
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../../docs/operations/zenoh-trial-onboarding.md"

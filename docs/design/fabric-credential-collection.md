@@ -42,7 +42,9 @@ Two operational facts worth keeping:
   of the image.** Two goatnets ran the identical portal image digest and
   behaved differently for exactly this reason. Build it `-tags nopiv` for the
   target arch and restart the portal — a running container pins the old inode
-  through the mount.
+  through the mount. When the binary is missing at `portal_bundle_create_bin`,
+  the portal role now builds it on the controller and installs it, as it does
+  `cert-sign`, and refuses a directory Docker left at that path (built).
 - **Current builds enforce a fail-closed gear-class taxonomy check**, and the
   portal passes no `--taxonomy`, so the binary resolves the repo-relative
   default by walking up from its working directory — `/` inside the container.

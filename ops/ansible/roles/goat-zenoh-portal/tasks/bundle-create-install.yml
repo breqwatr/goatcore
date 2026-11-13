@@ -1,0 +1,39 @@
+---
+# Build bundle-create on the controller for this host's architecture, from this
+# checkout's ops/enrollment, and install it at portal_bundle_create_bin (the
+# path the portal container bind-mounts). Included by main.yml for a host whose
+# binary is missing. Same shape as cert-sign-install.yml.
+- name: Build bundle-create on the controller for this host's architecture
+  ansible.builtin.command:
+    argv:
+      - go
+      - build
+      - -tags
+      - nopiv
+      - -o
+      - "{{ playbook_dir }}/../../.bundle-create-{{ inventory_hostname }}"
+      - ./cmd/bundle-create
+    chdir: "{{ playbook_dir }}/../enrollment"
+  environment:
+    GOOS: linux
+    GOARCH: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+    CGO_ENABLED: "0"
+  delegate_to: localhost
+  become: false
+  changed_when: true
+
+- name: Install bundle-create on the host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../.bundle-create-{{ inventory_hostname }}"
+    dest: "{{ portal_bundle_create_bin }}"
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+
+- name: Remove the controller-side build artefact
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../../.bundle-create-{{ inventory_hostname }}"
+    state: absent
+  delegate_to: localhost
+  become: false

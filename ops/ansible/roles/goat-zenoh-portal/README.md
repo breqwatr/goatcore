@@ -86,10 +86,12 @@ Zenoh trial fabric onto a single host. Per design at
       CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags nopiv \
         -trimpath -ldflags '-s -w' -o bundle-create ./cmd/bundle-create
 
-  Place the binary on the host (e.g. `/usr/local/bin/bundle-create`,
-  `chmod 0755`), then set `portal_bundle_create_bin` to that path in
-  group_vars and redeploy. Setting the path before the binary exists fails
-  the bind-mount.
+  Set `portal_bundle_create_bin` to the host path (e.g.
+  `/usr/local/bin/bundle-create`) in group_vars and deploy. When the binary
+  is missing there, the role builds it this way on the controller for the
+  host's architecture and installs it, as it does for `cert-sign`. A
+  directory at that path (docker made one from a missing mount source) is
+  refused; remove it by hand.
 
 ## What this role does NOT do
 

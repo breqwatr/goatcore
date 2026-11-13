@@ -263,11 +263,9 @@ portal_cert_sign_fake: false
 # separate hand-delivered file.
 #
 # Empty by default = OFF: the .cbor is omitted (graceful) and the bind-
-# mount is skipped, so a routine portal redeploy is safe even before the
-# binary exists. To ENABLE: (1) place a native-arch bundle-create at the
-# path below on the host (same as cert-sign — see role README), then
-# (2) set portal_bundle_create_bin to that path in group_vars and redeploy.
-# Enabling before the binary is placed would fail the container's bind-mount.
+# mount is skipped. To ENABLE: set portal_bundle_create_bin to the host path
+# in group_vars. When the binary is missing there, the role builds it on the
+# controller for the host's architecture and installs it (same as cert-sign).
 portal_bundle_create_bin: ""
 
 # The PUBLIC key of the CA that signs the .cbor, staged on the host and shipped
