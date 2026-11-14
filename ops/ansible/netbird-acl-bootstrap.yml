@@ -203,3 +203,54 @@
             - {{ r.json.name }} (id={{ r.json.id }})
             {% endfor %}
           {% endif %}
+
+    # --------------------------------------------------------------
+    # Phase 3 — Seat this site's mgmt hosts in INFRA
+    # --------------------------------------------------------------
+    # The taxonomy puts mgmt hosts in INFRA, and every declared rule that
+    # reaches the box names INFRA. A host enrols before this play first runs
+    # (standup phase 8), so its setup key could not carry the group, and once
+    # the cutover deletes the Default policy a host outside INFRA is reachable
+    # by no one. Adds the site's mgmt-<site>-NN peers; never removes a peer.
+
+    - name: "GET groups and peers after creation"
+      ansible.builtin.uri:
+        url: "{{ (netbird_mgmt_url | default(netbird_site_url_map.get(target_site, 'https://netbird.' ~ target_site ~ '.net'), true)) }}/api/{{ item }}"
+        method: GET
+        headers:
+          Authorization: "Token {{ lookup('env', netbird_site_env_var_map.get(target_site, (target_site | upper | replace('-','_')) ~ '_NB_API_TOKEN')) }}"
+          Accept: application/json
+        status_code: [200]
+        return_content: true
+      loop: [groups, peers]
+      register: infra_survey
+      check_mode: false   # read-only
+
+    - name: "Compute the INFRA group and the mgmt peers missing from it"
+      ansible.builtin.set_fact:
+        infra_group: >-
+          {{ infra_survey.results[0].json
+             | selectattr('name', 'equalto', netbird_acl_taxonomy[target_site].site_prefix ~ '-INFRA')
+             | first | default({}) }}
+        mgmt_peer_ids: >-
+          {{ infra_survey.results[1].json
+             | selectattr('name', 'match', '^mgmt-' ~ target_site ~ '-[0-9]+$')
+             | map(attribute='id') | list }}
+
+    - name: "Add the mgmt peers to INFRA"
+      ansible.builtin.uri:
+        url: "{{ (netbird_mgmt_url | default(netbird_site_url_map.get(target_site, 'https://netbird.' ~ target_site ~ '.net'), true)) }}/api/groups/{{ infra_group.id }}"
+        method: PUT
+        headers:
+          Authorization: "Token {{ lookup('env', netbird_site_env_var_map.get(target_site, (target_site | upper | replace('-','_')) ~ '_NB_API_TOKEN')) }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ infra_group.name }}"
+          peers: "{{ ((infra_group.peers | default([]) | map(attribute='id') | list) + mgmt_peer_ids) | unique }}"
+        status_code: [200]
+      when:
+        - infra_group.id is defined
+        - mgmt_peer_ids | difference(infra_group.peers | default([]) | map(attribute='id') | list) | length > 0
+        - not ansible_check_mode
+      changed_when: true
