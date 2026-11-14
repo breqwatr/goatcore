@@ -73,7 +73,7 @@ class Acl(unittest.TestCase):
         unreached = declared - gear_names - {"INFRA", "PLATFORM-ADMIN", "DEVELOPER"}
         self.assertTrue(unreached <= derived, unreached)
         rows = yaml.safe_load(render.acl_tests_block(f))["fixture"]
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 9)
 
     def test_the_render_writes_assertions_because_a_silent_scope_is_not_a_pass(self):
         # `goat acl test <name>` fails on a scope with no assertions, and the

@@ -1677,7 +1677,11 @@ def acl_tests_block(f: dict) -> str:
     - name: "an enrolled machine reaches nobody but the box"
       src: [{gear}]
       proto: any
-      deny: ["PLATFORM-ADMIN:*", "DEVELOPER:*", "INFRA:22"]"""
+      deny: ["PLATFORM-ADMIN:*", "DEVELOPER:*"]
+    - name: "an enrolled machine has no SSH to the box"
+      src: [{gear}]
+      proto: tcp
+      deny: ["INFRA:22"]"""
     return tests
 
 
