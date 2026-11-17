@@ -1200,6 +1200,18 @@ step 12 GATE "every input the phases after the manual step will reach is set (th
 step 12 A "pubsub-state Repl mirror (Block 86)" \
   "cd '$REPO/ops/ansible' && if ls group_vars/${GROUP}/pubsub-state.yml >/dev/null 2>&1; then $ANSIBLE_PRE ${INV[*]} pubsub-state-mirror-deploy.yml -e target=$GROUP; else echo 'no group_vars/${GROUP}/pubsub-state.yml — the pub/sub state mirror is not configured for this goatnet; skipping. It needs a Forgejo you run for this goatnet (goatcore ships no Forgejo role): see ops/ansible/roles/pubsub-state-repo/README.md, then re-run --from 12'; fi"
 
+# Phase 12. [goatlite, internet] The identity console and its mail sink
+#      (lite.onboarding, which needs lite.internet): the onboarding engine the
+#      front desk and the runner below talk to. A full goatnet deploys the console
+#      with site-services.yml; a goatlite has only the standup, so it is deployed
+#      here when the render turned it on (id_admin_console_enabled in vars.yml).
+#      A LAN goatlite's first run does not grow by this step (goatlite-growth.md
+#      gate G2). The console reads the NetBird API over its public certificate.
+if [ "$LITE" = 1 ] && [ "$PROFILE" = internet ]; then
+step 12 A "[goatlite] identity console and its mail sink (lite.onboarding; skipped when the console is off)" \
+  "cd '$REPO/ops/ansible' && if grep -qE '^id_admin_console_enabled:[[:space:]]*true' group_vars/$GROUP/vars.yml 2>/dev/null; then $ANSIBLE_PRE ${INV[*]} smtp-sink.yml -e target=$GROUP -l 'mgmt-${SITE}-01*' && $ANSIBLE_PRE ${INV[*]} id-admin-console-deploy.yml -e target=$GROUP -l 'mgmt-${SITE}-01*' -e postgres_superuser_password=\"\$(printenv ${SITE_UPPER}_PG_PASS)\" -e netbird_api_ca=public; else echo '    id_admin_console_enabled is not true for $GROUP (lite.onboarding is off): no identity console; skipping'; fi"
+fi
+
 # Phase 12. Onboarding PUBLIC intake front desk (ADR 1062 stage 1) — the public web
 #      page an off-mesh candidate opens to submit their onboarding form. Without
 #      it, `goat admin invite` hands out links to a host that does not exist and

@@ -628,6 +628,13 @@ fn plan(repo: &Path, s: &Site, o: &Options, resume: &str) -> Vec<Event> {
     }
     ev.push(p(12, "GATE", "every input the phases after the manual step will reach is set (the NetBird service token phase 11 issues)".into(), format!("python3 '{r}/ops/scripts/standup-required-inputs.py' {site} --profile {} --from 12", s.profile)));
     ev.push(p(12, "A", "pubsub-state Repl mirror (Block 86)".into(), format!("cd '{r}/ops/ansible' && if ls group_vars/{g}/pubsub-state.yml >/dev/null 2>&1; then {pre} {inv} pubsub-state-mirror-deploy.yml -e target={g}; else echo 'no group_vars/{g}/pubsub-state.yml — the pub/sub state mirror is not configured for this goatnet; skipping. It needs a Forgejo you run for this goatnet (goatcore ships no Forgejo role): see ops/ansible/roles/pubsub-state-repo/README.md, then re-run --from 12'; fi")));
+    if s.lite && internet {
+        // The identity console and its mail sink (lite.onboarding, which needs
+        // lite.internet). A full goatnet deploys the console with site-services.yml;
+        // a goatlite has only the standup, so it is deployed here when the render
+        // turned it on. A LAN goatlite's first run does not grow (gate G2).
+        ev.push(p(12, "A", "[goatlite] identity console and its mail sink (lite.onboarding; skipped when the console is off)".into(), format!("cd '{r}/ops/ansible' && if grep -qE '^id_admin_console_enabled:[[:space:]]*true' group_vars/{g}/vars.yml 2>/dev/null; then {pre} {inv} smtp-sink.yml -e target={g} -l 'mgmt-{site}-01*' && {pre} {inv} id-admin-console-deploy.yml -e target={g} -l 'mgmt-{site}-01*' -e postgres_superuser_password=\"$(printenv {u}_PG_PASS)\" -e netbird_api_ca=public; else echo '    id_admin_console_enabled is not true for {g} (lite.onboarding is off): no identity console; skipping'; fi")));
+    }
     ev.push(p(12, "A", "onboarding intake front desk (public, ADR 1062 stage 1)".into(), format!("cd '{r}/ops/ansible' && {pre} {inv} onboard-intake-deploy.yml -e target={g} -e site_id={site}")));
     ev.push(p(12, "A", "onboard-runner (auto-mint on approval, ADR 1062 stage 3)".into(), format!("cd '{r}/ops/ansible' && {pre} {inv} onboard-runner-deploy.yml -e target={g} -e site_id={site}")));
     ev.push(p(12, "A", "grant-keyd (encryption key distribution)".into(), format!("cd '{r}/ops/ansible' && {pre} {inv} grant-keyd-deploy.yml -e target={g} -l 'mgmt-{site}-01*'")));
@@ -2082,6 +2089,31 @@ mod tests {
         copy_dir(&src, &dst);
         let f = Fixture::open(&dst).unwrap();
         crate::testdir::Held::with(dst, f)
+    }
+
+    /// lite.onboarding: an internet goatlite's phase 12 deploys the identity console
+    /// and its mail sink before the front desk and the runner that talk to it,
+    /// guarded on the rendered vars.yml; a LAN goatlite (the first-run budget) and a
+    /// full goatnet (site-services.yml deploys its console) have no such step.
+    #[test]
+    fn a_goatlite_deploys_the_console_before_the_front_desk_and_a_full_goatnet_does_not() {
+        let o = Options { env: "zagros", site: "zagros", profile: Some("internet"), from: 1, to: 14, skip_obs: true, obs_only: false, dry_run: true, parallel: false, check: false };
+        let label = "[goatlite] identity console and its mail sink (lite.onboarding; skipped when the console is off)";
+        let lite = Site { lite: true, profile: "internet".into(), ..test_site(false) };
+        let ph = phase_lines(&lite, &o);
+        let at = |l: &str| ph.iter().position(|p| p.1 == l).unwrap_or_else(|| panic!("no step {l:?}"));
+        let console = at(label);
+        assert!(console < at("onboarding intake front desk (public, ADR 1062 stage 1)"));
+        assert!(console < at("onboard-runner (auto-mint on approval, ADR 1062 stage 3)"));
+        assert!(console > at("portal (registry, certificate minting, grant rows)"));
+        let cmd = &ph[console].2;
+        assert!(cmd.contains("grep -qE '^id_admin_console_enabled:[[:space:]]*true' group_vars/zagros_hosts/vars.yml"));
+        assert!(cmd.contains("smtp-sink.yml -e target=zagros_hosts") && cmd.contains("id-admin-console-deploy.yml -e target=zagros_hosts"));
+        assert!(cmd.contains(" -e netbird_api_ca=public;"), "the console reads the NetBird API over its public certificate");
+        let full = Site { profile: "internet".into(), ..test_site(false) };
+        assert!(!phase_lines(&full, &o).iter().any(|p| p.1 == label));
+        let lan = Options { profile: Some("lan"), ..o };
+        assert!(!phase_lines(&Site { lite: true, ..test_site(false) }, &lan).iter().any(|p| p.1 == label));
     }
 
     /// A site as read_site would build it for a LAN run, lite or not, with no

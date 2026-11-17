@@ -38,7 +38,7 @@ then open `http://127.0.0.1:8025`.
 
 ## Where it takes effect
 
-The console sends without AUTH when its username is empty from the console build that carries `internal/mailer` `auth()`; a goatnet gets that once a console image built from it is pinned in `fleet-pins.yaml`. A goatlite does not run the identity console today (`LITE_ABSENT` in `ops/scripts/goatlite-render.py`).
+The console sends without AUTH when its username is empty from the console build that carries `internal/mailer` `auth()`; a goatnet gets that once a console image built from it is pinned in `fleet-pins.yaml`. A goatlite runs the console only with `lite.onboarding: true`, which turns the sink on and pins a console build that carries `auth()` in `ops/pins/lite-pins.yaml` ([goatlite.md §6](../../../docs/design/goatlite.md#onboarding-more-people)).
 
 ## Test
 

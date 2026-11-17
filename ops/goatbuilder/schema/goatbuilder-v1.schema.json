@@ -76,6 +76,11 @@
           "type": "boolean",
           "default": false
         },
+        "onboarding": {
+          "description": "Onboarding more people (ADR 1062): the identity console, the public front desk on join.<apex> where a candidate opens a one-time invite, the runner that mints an approved proposal, and a mail sink in place of a mail account. Needs `internet`. Read by the renderer; default false.",
+          "type": "boolean",
+          "default": false
+        },
         "internet": {
           "description": "Growing out of lite (goatlite.md §6): the public zone and the cloud accounts an internet-enrollable goatnet needs. ops/scripts/goatlite-render.py renders the internet surface from it; the standup's profile becomes internet.",
           "type": "object",

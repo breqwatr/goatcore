@@ -179,6 +179,77 @@ class InternetFiles(unittest.TestCase):
         self.assertIn("signal_uri=netbird.fixture.example.org:443", render.inventory_block(self.F))
 
 
+class Onboarding(unittest.TestCase):
+    """lite.onboarding: the three-stage candidate pipeline (ADR 1062) on one box,
+    with a public front desk and a mail sink; off, nothing of it renders."""
+    ON = facts({"zone": "fixture.example.org"}, onboarding=True)
+    GV = yaml.safe_load(render.vars_yml(ON))
+
+    def test_off_by_default_renders_none_of_it(self):
+        f = facts({"zone": "fixture.example.org"})
+        gv = yaml.safe_load(render.vars_yml(f))
+        self.assertIs(gv["id_admin_console_enabled"], False)
+        for key in ("onboard_intake_enabled", "onboard_runner_enabled", "smtp_sink_enabled"):
+            self.assertNotIn(key, gv)
+        self.assertEqual([s["name"] for s in gv["isitup_services"]], list(render.MESH_SERVICES))
+        self.assertNotIn("join", render.terraform_tf(f))
+        self.assertIn("absent: true", render.pins_deviations(f)["id-admin-console"])
+
+    def test_on_turns_on_the_console_front_desk_runner_and_sink(self):
+        gv = self.GV
+        self.assertIs(gv["id_admin_console_enabled"], True)
+        self.assertEqual(gv["id_admin_console_store"], "postgres")
+        self.assertIs(gv["onboard_intake_enabled"], True)
+        self.assertIs(gv["onboard_runner_enabled"], True)
+        self.assertIs(gv["smtp_sink_enabled"], True)
+        self.assertEqual(render.internet_problems(gv, self.ON), [])
+
+    def test_the_front_desk_is_public_on_the_entrypoint_the_relays_reach(self):
+        # The relays tunnel :443 to websecure; an `enrollment` router would never be reached.
+        self.assertEqual(self.GV["onboard_intake_public_fqdn"], "join.{{ site_dns_zone }}")
+        self.assertEqual(self.GV["onboard_intake_entrypoint"], "websecure")
+        self.assertEqual(self.GV["id_admin_console_intake_base_url"], "https://join.{{ site_dns_zone }}")
+        tf = render.terraform_tf(self.ON)
+        for r in ("a", "b"):
+            self.assertIn(f'resource "cloudflare_record" "join_{r}"', tf)
+            self.assertIn(f"content = module.relay_{r}.public_ip", tf)
+        self.assertIn('name    = "join.netbird"', tf)
+
+    def test_mail_goes_to_the_sink_without_a_login(self):
+        self.assertEqual(self.GV["id_admin_console_smtp_host"], "goat-smtp-sink")
+        self.assertEqual(self.GV["id_admin_console_smtp_reply_to"], "admin@example.org")
+        self.assertNotIn("id_admin_console_smtp_username", self.GV)
+
+    def test_the_welcome_package_names_management_and_the_portal(self):
+        self.assertEqual(self.GV["id_admin_console_notify_mgmt_url"], "https://{{ public_mgmt_fqdn }}")
+        self.assertEqual(self.GV["id_admin_console_notify_portal_url"],
+                         "https://portal.{{ site_id }}.{{ site_dns_zone }}")
+
+    def test_secrets_are_lookups(self):
+        for key in ("id_admin_console_oauth2_proxy_cookie_secret", "id_admin_console_enroll_watch_nb_token"):
+            self.assertTrue(self.GV[key].startswith("{{ lookup('env', 'FIXTURE_"), key)
+
+    def test_the_console_names_resolve_on_the_mesh(self):
+        names = {s["name"]: s["fqdn"] for s in self.GV["isitup_services"]}
+        self.assertEqual(names["admin-auth"], "admin.auth.{{ site_id }}.{{ site_dns_zone }}")
+        self.assertIn("onboard", names)
+        self.assertIn("guide", names)
+
+    def test_the_console_runs_the_sidecar_image_not_absent(self):
+        entry = render.pins_deviations(self.ON)["id-admin-console"]
+        self.assertIn(f'value: "{render.ONBOARDING_CONSOLE_IMAGE}"', entry)
+        self.assertNotIn("absent", entry)
+        # The prepared-image preset is unchanged: it lists what a goatlite runs by default.
+        self.assertEqual(render.lite_deviations()["id-admin-console"], ("absent", "tier"))
+
+    def test_refused_without_the_internet_or_as_a_non_boolean(self):
+        with self.assertRaises(render.Refuse) as cm:
+            facts(onboarding=True)
+        self.assertIn("lite.internet", str(cm.exception))
+        with self.assertRaises(render.Refuse):
+            facts({"zone": "fixture.example.org"}, onboarding="yes")
+
+
 class LanUnchanged(unittest.TestCase):
     def test_a_lan_render_carries_no_internet_setting(self):
         f = facts()

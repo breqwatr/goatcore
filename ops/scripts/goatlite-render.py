@@ -112,6 +112,15 @@ NETBIRD_CLIENT_VERSION = "0.83.0"
 # isitup_services registry ops/dns/generate-mesh-hosts.py renders the zone from
 # in phase 12 (isitup itself it adds on its own).
 MESH_SERVICES = ("dashboard", "auth", "oauth2", "mgmt", "portal", "zenoh")
+# lite.onboarding adds the identity console's three names, (registry name, host
+# label): its sign-in pages, its machine API (`goat admin invite`, the runner)
+# and the onboarding guide. Traefik already routes each once the console is on.
+ONBOARDING_MESH_SERVICES = (("admin-auth", "admin.auth"), ("onboard", "onboard"), ("guide", "guide"))
+# The console image lite.onboarding runs. The fleet row predates the mailer that
+# sends without SMTP AUTH, which the mail sink (ops/recipes/smtp-sink/) needs, and
+# fleet-pins.yaml never changes under a learner, so the sidecar carries this one.
+ONBOARDING_CONSOLE_IMAGE = ("ghcr.io/{{ ghcr_org }}/goat-id-console"
+                            "@sha256:837ebbcc9219297c482888a1bc0d37a0a3cd29d0063ba7c78fa2853539781b05")
 
 
 class Refuse(Exception):
@@ -170,8 +179,14 @@ def load_config(path: Path, site: str) -> dict:
     machines = lite.get("machines", False)
     if not isinstance(machines, bool):
         raise Refuse("lite.machines must be true or false")
+    onboarding = lite.get("onboarding", False)
+    if not isinstance(onboarding, bool):
+        raise Refuse("lite.onboarding must be true or false")
+    if onboarding and internet is None:
+        raise Refuse("lite.onboarding needs lite.internet: a candidate opens the invite on the public front desk "
+                     "(join.<apex>) before joining the mesh, and only an internet goatlite has public relays")
     unknown = set(lite) - {"name", "host", "ssh_user", "admin", "zone", "disk_encryption", "data_disk", "ssh_pubkey",
-                           "internet", "image_registry", "machines"}
+                           "internet", "image_registry", "machines", "onboarding"}
     if unknown:
         raise Refuse(f"lite: unknown key(s) {', '.join(sorted(unknown))}")
     try:
@@ -180,7 +195,7 @@ def load_config(path: Path, site: str) -> dict:
         is_ip = False
     return {"name": name, "host": host, "user": user, "admin": admin, "zone": zone,
             "disk_encryption": enc, "data_disk": disk, "host_is_ip": is_ip, "ssh_pubkey": pubkey_path,
-            "image_registry": registry, "machines": machines,
+            "image_registry": registry, "machines": machines, "onboarding": onboarding,
             "internet": internet}
 
 
@@ -384,6 +399,45 @@ def vars_yml(f: dict) -> str:
 portal_mesh_key_mint_enabled: true
 portal_netbird_api_token_envvar: "{up}_PORTAL_NB_SVC_TOKEN"
 """ if f.get("machines") else "")
+    # lite.onboarding (requires lite.internet, checked in load_config): the
+    # three-stage candidate pipeline (ADR 1062) on one box. The identity console,
+    # the public front desk on join.<apex> (the relays tunnel :443 to the websecure
+    # entrypoint; a goatlite has no separate enrollment one), the runner that mints
+    # an approved proposal, and a mail sink in place of a mail account. Phase 12
+    # deploys the sink and the console when id_admin_console_enabled is true here.
+    onboarding = (f"""
+# -- Onboarding (lite.onboarding; ADR 1062, docs/design/goatlite.md §3) --------
+# The identity console. Its store is Postgres; on a fresh box the store role
+# creates the databases ({up}_ID_CONSOLE_DB_PASS, phase 3).
+id_admin_console_enabled: true
+id_admin_console_oauth2_proxy_enabled: true
+id_admin_console_store: postgres
+id_admin_console_oauth2_proxy_cookie_secret: "{{{{ lookup('env', '{up}_ID_ADMIN_CONSOLE_OAUTH2_PROXY_COOKIE_SECRET') }}}}"
+id_admin_console_enroll_watch_nb_token: "{{{{ lookup('env', '{up}_ENROLLWATCH_NB_TOKEN') }}}}"
+# The public front desk a candidate opens the one-time invite on, before joining
+# the mesh: join.<apex>, round-robin to the relays (terraform-{n}/).
+onboard_intake_enabled: true
+onboard_intake_public_fqdn: "join.{{{{ site_dns_zone }}}}"
+onboard_intake_entrypoint: websecure
+id_admin_console_intake_base_url: "https://join.{{{{ site_dns_zone }}}}"
+id_admin_console_portal_public_url: "https://join.{{{{ site_dns_zone }}}}"
+# What the welcome package names: the management URL for `netbird up` and the
+# portal its one-time bundle link is built on. A goatlite has no get.<site>.
+id_admin_console_notify_mgmt_url: "https://{{{{ public_mgmt_fqdn }}}}"
+id_admin_console_notify_portal_url: "https://portal.{{{{ site_id }}}}.{{{{ site_dns_zone }}}}"
+# The runner mints an approved proposal: the Ory account, the mesh setup key
+# and the fabric slot and bundle.
+onboard_runner_enabled: true
+# No mail account: mail goes to the sink (Mailpit on the box's docker network,
+# ops/recipes/smtp-sink/), where the administrator reads each invite and welcome
+# package and hands it over. An empty username sends without SMTP AUTH.
+smtp_sink_enabled: true
+id_admin_console_smtp_host: "goat-smtp-sink"
+id_admin_console_smtp_port: "1025"
+id_admin_console_smtp_from: "onboard@{{{{ site_dns_zone }}}}"
+id_admin_console_smtp_reply_to: "{f['admin']}"
+""" if f.get("onboarding") else "")
+    console_off = "" if f.get("onboarding") else "id_admin_console_enabled: false\n"
     if f["disk_encryption"]:
         luks = f"""# -- Disk encryption: ON (goatnet-standup.md decision 1; os-baseline-and-luks.md R4) --
 # One data disk (goatlite.yaml data_disk, default /dev/nvme0n1 — CHECK IT: phase 2
@@ -491,8 +545,9 @@ id_admin_console_oauth2_proxy_client_secret: "{{{{ lookup('env', '{up}_ID_ADMIN_
         relays = relay_fqdns(f)
         stun = "\n".join(f"  - {r}" for r in relays)
         addrs = "\n".join(f'  - "rels://{r}:{RELAY_DATA_PORT}"' for r in relays)
-        mesh_registry = "\n".join(f'  - {{name: {svc}, fqdn: "{svc}.{{{{ site_id }}}}.{{{{ site_dns_zone }}}}"}}'
-                             for svc in MESH_SERVICES)
+        services = [(svc, svc) for svc in MESH_SERVICES] + (list(ONBOARDING_MESH_SERVICES) if f.get("onboarding") else [])
+        mesh_registry = "\n".join(f'  - {{name: {svc}, fqdn: "{host_part}.{{{{ site_id }}}}.{{{{ site_dns_zone }}}}"}}'
+                                  for svc, host_part in services)
         mesh = inet["mesh_ip"]
         mesh_line = (f'mesh_ip_a: "{mesh}"' if mesh else
                      f'# Until phase 8 enrols the box, services bind its address; after it, set\n'
@@ -597,13 +652,12 @@ prometheus_enabled: false
 alertmanager_enabled: false
 grafana_enabled: false
 # Off on a goatlite today (see LITE_ABSENT): MinIO and the audit subscriber (the
-# pinned MinIO image no longer exists upstream), the identity console (mail and
-# external identity doors). The served goat and goatbuilder fetch release
+# pinned MinIO image no longer exists upstream), the identity console unless
+# lite.onboarding turns it on (below). The served goat and goatbuilder fetch release
 # assets with a GitHub token, an account a goatlite does not need; a learner
 # downloads both binaries from the release page.
 minio_enabled: false
-id_admin_console_enabled: false
-goat_get_enabled: false
+{console_off}goat_get_enabled: false
 goat_docs_enabled: false
 # With no goat-get there is no served goat to sync the host's from, so the
 # onboard-runner role records the goat-cli payload as absent, as declared.
@@ -792,7 +846,7 @@ portal_cert_sign_ca_id: "{{{{ goat_ca_id }}}}"
 portal_bundle_create_bin: "/usr/local/bin/bundle-create"
 portal_operator_api_key: "{{{{ lookup('env', '{up}_PORTAL_OPERATOR_API_KEY') }}}}"
 {machine_mint}portal_traefik_mesh_only_middleware: "{mesh_mw}"
-
+{onboarding}
 # -- Onboarding-email environment identity (goatnet-turnkey-standup.md) -------
 id_admin_console_notify_goatnet_tagline: "{n} goatlite"
 id_admin_console_notify_goatnet_purpose: >-
@@ -878,6 +932,18 @@ def terraform_tf(f: dict) -> str:
   rathole_ingress_enabled = true
   coturn_enabled          = true
 }}""" for r in relays)
+    # lite.onboarding: the public front desk's name, round-robin to the relays like
+    # the apex; each relay tunnels :443 to the box, where Traefik routes it.
+    join = "".join(f"""
+resource "cloudflare_record" "join_{r['name']}" {{
+  zone_id = var.cloudflare_zone_id
+  name    = "join.netbird"
+  content = module.relay_{r['name']}.public_ip
+  type    = "A"
+  ttl     = 60
+  proxied = false
+}}
+""" for r in relays) if f.get("onboarding") else ""
     outputs = "\n".join(f"""    {r['name']} = {{
       public_ip           = module.relay_{r['name']}.public_ip
       instance_id         = module.relay_{r['name']}.instance_id
@@ -948,7 +1014,7 @@ variable "cloudflare_zone_name" {{
 provider "cloudflare" {{}} # reads CLOUDFLARE_API_TOKEN
 
 {modules}
-
+{join}
 # The bucket the Ansible SSM connection stages files through when it reaches a relay.
 resource "random_id" "ansible_ssm" {{
   byte_length = 4
@@ -1221,8 +1287,9 @@ LITE_ABSENT = {
     # Not on a goatlite today (measured on the second VM run, 2026-11-03): the
     # pinned MinIO release is gone from Docker Hub and quay.io, so neither MinIO
     # nor the audit subscriber that writes to it can start on a new box; the
-    # identity console needs a mail sender and two external identity doors a
-    # goatlite has no account for. Each returns when that is solved.
+    # identity console needed a mail sender and two external identity doors a
+    # goatlite has no account for. Each returns when that is solved; the console
+    # returns with lite.onboarding (a mail sink, and no external door).
     "audit-subscriber", "id-admin-console",
     # Deployed by no goatlite phase (measured on a clean-VM run, 2026-11-08): the
     # download and docs surfaces are off (goat_get_enabled / goat_docs_enabled
@@ -1290,12 +1357,13 @@ def from_registry(ref: str, registry: str) -> str:
     return GOAT_IMAGE.sub(registry + "/", ref, count=1) if registry else ref
 
 
-def lite_deviations(image_registry: str = "") -> dict:
+def lite_deviations(image_registry: str = "", onboarding: bool = False) -> dict:
     """component -> ("absent", why) or ("value", ref, why) for a goatlite; why is `tier`
-    or `null` for an absent component, `dev` or `registry` for a value. The component
-    list and the dev rung's values are read from fleet-pins.yaml, where component
-    definitions live. With image_registry set, every goat image the goatlite runs is
-    pinned at that registry under the same name and digest."""
+    or `null` for an absent component, `dev`, `registry` or `onboarding` for a value.
+    The component list and the dev rung's values are read from fleet-pins.yaml, where
+    component definitions live. With image_registry set, every goat image the goatlite
+    runs is pinned at that registry under the same name and digest. With onboarding
+    (lite.onboarding), the identity console runs ONBOARDING_CONSOLE_IMAGE."""
     table = yaml.safe_load(FLEET_PINS.read_text(encoding="utf-8"))
     comps = table.get("components") or {}
     dev_rung = dev_rung_name()
@@ -1303,7 +1371,9 @@ def lite_deviations(image_registry: str = "") -> dict:
     for cname, spec in comps.items():
         devs = spec.get("deviations") or {}
         is_image = (spec.get("artifact_type") or "image") == "image"
-        if cname in LITE_ABSENT:
+        if onboarding and cname == "id-admin-console":
+            out[cname] = ("value", from_registry(ONBOARDING_CONSOLE_IMAGE, image_registry), "onboarding")
+        elif cname in LITE_ABSENT:
             out[cname] = ("absent", "tier")
         elif (devs.get(dev_rung) or {}).get("value") if dev_rung else False:
             # A goatlite is a learner goatnet and sits on the dev rung: where that
@@ -1327,7 +1397,7 @@ def pins_deviations(f: dict) -> dict:
     dev_rung = dev_rung_name()
     registry = f.get("image_registry") or ""
     out = {}
-    for cname, dev in lite_deviations(registry).items():
+    for cname, dev in lite_deviations(registry, bool(f.get("onboarding"))).items():
         head = f"      {f['name_us']}:\n"
         if dev[0] == "absent" and dev[1] == "tier":
             out[cname] = (head + "        absent: true\n        reason: >-\n"
@@ -1338,6 +1408,11 @@ def pins_deviations(f: dict) -> dict:
             out[cname] = (head + "        absent: true\n        reason: >-\n"
                           f"          goatlite (ADR 1213): the fleet row is null and the dev rung carries no\n"
                           f"          value either; not deployed on a goatlite. Rendered by ops/scripts/goatlite-render.py.")
+        elif dev[2] == "onboarding":
+            out[cname] = (head + f"        value: \"{dev[1]}\"\n        reason: >-\n"
+                          f"          goatlite (ADR 1213): lite.onboarding runs the console build whose mailer\n"
+                          f"          sends without SMTP AUTH, which the mail sink needs; the fleet row predates\n"
+                          f"          it. Rendered by ops/scripts/goatlite-render.py.")
         elif dev[2] == "dev":
             served = f" served from {registry}" if registry and dev[1].startswith(registry + "/") else ""
             out[cname] = (head + f"        value: \"{dev[1]}\"\n        reason: >-\n"
