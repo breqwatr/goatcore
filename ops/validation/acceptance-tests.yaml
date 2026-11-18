@@ -676,7 +676,9 @@ tests:
     aspect: id-console/audit
     probe: cmd-assert
     params: {host: "{{ orin_a }}", cmd: "test -f /var/lib/goat-id-console/audit.jsonl && echo file", expect_match: "^file$"}
-    requires: [goat-id-console]
+    # The race needs microscope, which mounts the file; without it the console
+    # keeps its default stderr audit backend and never writes the file.
+    requires: [goat-id-console, microscope]
     severity: gate
     caught_would_have: >-
       Docker creates a missing bind-mount source AS A DIRECTORY. If microscope
