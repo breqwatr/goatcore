@@ -934,7 +934,11 @@ tests:
     aspect: fabric/round-trip
     probe: goat-cli
     params: {via: "{{ probe_via }}", context: "{{ probe_context }}", verb: "hello --json",
-             expect_jq: ".mode == \"real\" and .round_trip", timeout: 60}
+             expect_jq: ".mode == \"real\" and .round_trip", timeout: 60,
+             # With no fabric identity in the context, goat hello runs in sandbox
+             # mode and exits 0: the probe cannot speak for the goatnet.
+             unknown_jq: ".mode == \"sandbox\"",
+             unknown_reason: "goat hello ran in sandbox mode: the context holds no fabric identity"}
     requires: [goat-zenoh]
     caught_would_have: >-
       a router that answers its port and the health surfaces while refusing or
